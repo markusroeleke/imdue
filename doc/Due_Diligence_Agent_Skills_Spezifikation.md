@@ -1,14 +1,16 @@
 # Agent Skills Spezifikation: Immobilien Due Diligence
 
 **Autor:** Manus AI
-**Version:** 1.0
+**Version:** 2.0
 **Datum:** 30. Juni 2026
 
 ---
 
 ## 1. Einleitung
 
-Dieses Dokument spezifiziert die Orchestrierung der KI-Intelligenz für die Immobilien-Due-Diligence-WebApp über die **Manus API**. Es definiert, wie "Agent Skills" und Projekt-Instruktionen kombiniert werden, um hochgeladene Maklerunterlagen (z.B. Exposés, Grundbücher, Mietverträge, Gutachten) vollautomatisch zu analysieren.
+Dieses Dokument spezifiziert die vollständige Orchestrierung der KI-Intelligenz für die Immobilien-Due-Diligence-WebApp über die **Manus API**. Es definiert den **mehrstufigen Analyse-Workflow** mit dedizierten Skills für jeden Teilschritt sowie einen übergeordneten **Gesamt-Workflow-Skill**, der alle Teilschritte koordiniert.
+
+Die Architektur folgt dem Prinzip der **Skill-Komposition**: Jeder Teilschritt ist ein eigenständiger, abgeschlossener Manus-Task mit spezifischen Force Skills und einem eigenen Structured Output Schema. Der Gesamt-Workflow-Skill aggregiert alle Teilergebnisse und erzeugt das finale, berichtsreife Ergebnisobjekt.
 
 Anstatt für jede Aufgabe den kompletten System-Prompt neu zu übergeben, nutzt die Architektur die Manus API-Funktion `project.create` für dauerhafte Instruktionen (Personas) und `task.create` in Kombination mit `force_skills` und `structured_output_schema` für die exakte Ausführung [1].
 
