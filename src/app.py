@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import uuid
+from contextlib import suppress
 from pathlib import Path
 
 # Ensure the project root is on sys.path when Chainlit loads this file directly
@@ -11,6 +12,7 @@ from dotenv import load_dotenv
 
 from src.manus_client import (
     create_analysis_task,
+    list_task_messages,
     poll_for_followup_reply,
     poll_for_result,
     send_followup_message,
@@ -25,6 +27,52 @@ REPORTS_DIR = Path(__file__).parent.parent / "reports"
 REPORTS_DIR.mkdir(exist_ok=True)
 
 TRIGGER_WORDS = {"analyse", "analysieren", "bericht", "start", "auswerten"}
+
+
+async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
+    spinner = ["⏳", "🔄", "🛠️", "⚙️"]
+    idx = 0
+    seen_ids: set[str] = set()
+    steps: list[str] = []
+    loop = asyncio.get_running_loop()
+
+    def format_status(event: dict) -> str:
+        status_info = event.get("status_update", {}) or {}
+        parts: list[str] = []
+        label = status_info.get("label")
+        if label:
+            parts.append(label)
+        status = status_info.get("status")
+        if status:
+            parts.append(status.capitalize())
+        progress = status_info.get("progress")
+        if isinstance(progress, (int, float)):
+            parts.append(f"{int(progress)}%")
+        elif progress:
+            parts.append(str(progress))
+        return " – ".join(parts) if parts else "Status-Update"
+
+    try:
+        while True:
+            events = await loop.run_in_executor(None, list_task_messages, task_id, 20)
+            for event in reversed(events):
+                event_id = event.get("id")
+                if not event_id or event_id in seen_ids:
+                    continue
+                seen_ids.add(event_id)
+                if event.get("type") == "status_update":
+                    steps.append(format_status(event))
+            idx = (idx + 1) % len(spinner)
+            base = f"{spinner[idx]} KI analysiert Dokumente …"
+            if steps:
+                recent = "\n".join(f"- {line}" for line in steps[-5:])
+                status_msg.content = f"{base}\n{recent}"
+            else:
+                status_msg.content = f"{base}\n- Manus arbeitet weiter …"
+            await status_msg.update()
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        pass
 
 
 @cl.on_chat_start
@@ -82,9 +130,16 @@ async def main(message: cl.Message) -> None:
             msg.content = "🔍 KI analysiert Dokumente …"
             await msg.update()
 
-            result: dict = await asyncio.get_running_loop().run_in_executor(
-                None, poll_for_result, new_task_id
-            )
+            status_task = asyncio.create_task(stream_status_updates(new_task_id, msg))
+
+            try:
+                result: dict = await asyncio.get_running_loop().run_in_executor(
+                    None, poll_for_result, new_task_id
+                )
+            finally:
+                status_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await status_task
 
             msg.content = "📄 Erstelle Bericht …"
             await msg.update()

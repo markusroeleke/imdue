@@ -123,15 +123,7 @@ def send_followup_message(task_id: str, content: str) -> None:
 
 def poll_for_followup_reply(task_id: str) -> str:
     """Return the latest assistant_message text for a follow-up turn."""
-    res = requests.get(
-        f"{MANUS_API_URL}/task.listMessages",
-        headers=_headers(),
-        params={"task_id": task_id, "order": "desc", "limit": 5},
-        timeout=30,
-        verify=_ssl_verify(),
-    )
-    res.raise_for_status()
-    for event in res.json().get("data", []):
+    for event in list_task_messages(task_id, limit=5):
         if event.get("type") == "assistant_message":
             return event.get("content", "")
     return ""
@@ -140,15 +132,7 @@ def poll_for_followup_reply(task_id: str) -> str:
 def poll_for_result(task_id: str, timeout: int = 600) -> dict:
     start = time.time()
     while time.time() - start < timeout:
-        res = requests.get(
-            f"{MANUS_API_URL}/task.listMessages",
-            headers=_headers(),
-            params={"task_id": task_id, "order": "desc", "limit": 20},
-            timeout=30,
-            verify=_ssl_verify(),
-        )
-        res.raise_for_status()
-        events = res.json().get("data", [])
+        events = list_task_messages(task_id, limit=20)
         for e in events:
             if e.get("type") == "structured_output_result":
                 r = e["structured_output_result"]
@@ -172,6 +156,19 @@ def get_available_skills(project_id: str | None = None) -> list:
         f"{MANUS_API_URL}/skill.list",
         headers=_headers(),
         params=params or None,
+        timeout=30,
+        verify=_ssl_verify(),
+    )
+    res.raise_for_status()
+    return res.json().get("data", [])
+
+
+def list_task_messages(task_id: str, limit: int = 20) -> list:
+    """Return latest Manus task events (status updates, results, etc.)."""
+    res = requests.get(
+        f"{MANUS_API_URL}/task.listMessages",
+        headers=_headers(),
+        params={"task_id": task_id, "order": "desc", "limit": limit},
         timeout=30,
         verify=_ssl_verify(),
     )
