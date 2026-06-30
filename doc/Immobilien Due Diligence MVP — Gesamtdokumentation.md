@@ -25,7 +25,7 @@
 
 ## 1. Projektidee und Ziel
 
-Das MVP ist eine webbasierte Anwendung, die Immobilieninvestoren bei der strukturierten Prüfung von Kaufobjekten unterstützt. Der Nutzer lädt relevante Dokumente (Grundbuch, Mietverträge, Gutachten etc.) über ein einfaches Chat-Interface hoch. Eine KI analysiert diese Dokumente automatisch und liefert einen vollständigen PDF-Bericht mit Risikobewertung, wirtschaftlichen Kennzahlen und einer Checkliste offener Punkte.
+Das MVP ist eine webbasierte Anwendung, die Immobilieninvestoren bei der strukturierten Prüfung von Kaufobjekten unterstützt. Der Nutzer lädt relevante Maklerunterlagen (Exposé, Mieterliste, Grundbuch, Energieausweis etc.) über ein einfaches Chat-Interface hoch. Eine KI analysiert diese Dokumente automatisch und liefert einen vollständigen PDF-Bericht mit Risikobewertung, wirtschaftlichen Kennzahlen, Investment-Score (0–100) und einer Checkliste offener Punkte.
 
 Der entscheidende Architekturansatz: Es wird **keine eigene KI-Infrastruktur** aufgebaut. Die gesamte Analyse-Intelligenz wird an die **Manus API** mit Agent Skills ausgelagert. Die WebApp ist ein schlanker Orchestrierungs-Layer, der in reinem Python implementiert ist.
 
@@ -100,7 +100,7 @@ Internet → nginx (TLS) → Chainlit (Port 8000) → FastAPI (intern, Port 8001
 ### 5-Phasen-Datenfluss pro Analyse
 
 **Phase 1 — Datei-Upload durch Nutzer**
-Der Nutzer lädt ein oder mehrere Dokumente über das Chainlit-Frontend hoch. Das FastAPI-Backend empfängt die Dateien temporär.
+Der Nutzer lädt ein oder mehrere Dokumente über das Chainlit-Frontend hoch. Der Server empfängt die Dateien temporär.
 
 **Phase 2 — Upload zur Manus API**
 Das Backend fordert über `POST /v2/file.upload` eine temporäre, signierte Upload-URL an (3 Minuten gültig). Die Datei wird via HTTP PUT übertragen. Die API liefert eine eindeutige `file_id` zurück. Dateien werden von Manus nach **48 Stunden automatisch gelöscht**.
@@ -128,6 +128,7 @@ Das JSON wird über ein Jinja2-Template in HTML gerendert und via WeasyPrint in 
 
 | Dokumentenkategorie | Typische Formate | Analyseschwerpunkt |
 | :--- | :--- | :--- |
+| Exposé | PDF | Objekt- und Vermarktungsdaten, Verkäuferangaben |
 | Grundbuchauszug | PDF, JPG/PNG (Scan) | Eigentümer, Lasten, Beschränkungen, Grundschulden |
 | Mietvertrag / Mietliste | PDF, DOCX | Miethöhe, Laufzeit, Indexierung, Sonderklauseln |
 | Energieausweis | PDF | Energieklasse, Sanierungsbedarf |
@@ -146,11 +147,13 @@ Das JSON wird über ein Jinja2-Template in HTML gerendert und via WeasyPrint in 
 | Berichtsabschnitt | Inhalt |
 | :--- | :--- |
 | **Executive Summary** | Kurzzusammenfassung und Gesamtrisikobewertung (Low / Medium / High / Critical) |
-| **Red Flags** | Kritische Risiken, priorisiert nach Schweregrad, mit Quelldokument |
-| **Rechtliche Analyse** | Grundbuchlasten, mietrechtliche Risiken, fehlende Genehmigungen |
-| **Wirtschaftliche Analyse** | Ist-Miete vs. Marktmiete, Leerstandsrisiko, Instandhaltungsrückstau |
-| **Technische Hinweise** | Identifizierter Sanierungsbedarf aus Gutachten und Protokollen |
-| **Offene Punkte** | Checkliste von Informationen, die noch geprüft werden müssen |
+| **Vollstaendigkeitscheck** | Fehlende Unterlagen und Datenluecken |
+| **Kennzahlen** | KPIs wie Faktor, Renditen, Kaufpreis pro m2, Cashflow (falls Daten vorhanden) |
+| **Risikoanalyse** | Rechtlich, wirtschaftlich, technisch, Standort, Mietausfall (jeweils Low/Medium/High/Critical) |
+| **Staerken / Schwaechen** | Verdichtete Chancen und Problemfelder |
+| **Investment-Score** | Score 0-100 inkl. Begruendung und Einordnung |
+| **Offene Punkte** | Checkliste von Informationen, die noch geprueft werden muessen |
+| **Empfehlung** | Klarer Vorschlag: Kaufen / Nachverhandeln / Abstand nehmen |
 
 ---
 
@@ -215,6 +218,15 @@ DUE_DILIGENCE_SCHEMA = {
         "document_types_analyzed": { "type": "array", "items": { "type": "string" } },
         "overall_risk_level":      { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
         "executive_summary":       { "type": "string" },
+        "completeness_check": {
+            "type": "object",
+            "properties": {
+                "missing_documents": { "type": "array", "items": { "type": "string" } },
+                "missing_data_points": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["missing_documents", "missing_data_points"],
+            "additionalProperties": False
+        },
         "red_flags": {
             "type": "array",
             "items": {
@@ -229,6 +241,18 @@ DUE_DILIGENCE_SCHEMA = {
                 "additionalProperties": False
             }
         },
+        "risk_assessment": {
+            "type": "object",
+            "properties": {
+                "legal": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+                "financial": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+                "technical": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+                "location": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+                "tenant_default": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] }
+            },
+            "required": ["legal", "financial", "technical", "location", "tenant_default"],
+            "additionalProperties": False
+        },
         "financial_summary": {
             "type": "object",
             "properties": {
@@ -241,12 +265,50 @@ DUE_DILIGENCE_SCHEMA = {
                          "vacancy_risk_assessment", "maintenance_backlog_notes"],
             "additionalProperties": False
         },
+        "kpis": {
+            "type": "object",
+            "properties": {
+                "price_per_sqm_eur": { "type": ["number", "null"] },
+                "rent_multiplier": { "type": ["number", "null"] },
+                "gross_yield_percent": { "type": ["number", "null"] },
+                "net_yield_percent": { "type": ["number", "null"] },
+                "cashflow_pre_financing_eur": { "type": ["number", "null"] },
+                "cashflow_post_financing_eur": { "type": ["number", "null"] },
+                "operating_cost_ratio_percent": { "type": ["number", "null"] },
+                "reserve_need_notes": { "type": "string" },
+                "sensitivity_analysis_notes": { "type": "string" }
+            },
+            "required": [
+                "price_per_sqm_eur", "rent_multiplier", "gross_yield_percent",
+                "net_yield_percent", "cashflow_pre_financing_eur",
+                "cashflow_post_financing_eur", "operating_cost_ratio_percent",
+                "reserve_need_notes", "sensitivity_analysis_notes"
+            ],
+            "additionalProperties": False
+        },
         "legal_risks":     { "type": "array", "items": { "type": "string" } },
-        "open_questions":  { "type": "array", "items": { "type": "string" } }
+        "strengths":        { "type": "array", "items": { "type": "string" } },
+        "weaknesses":       { "type": "array", "items": { "type": "string" } },
+        "open_questions":  { "type": "array", "items": { "type": "string" } },
+        "investment_score": {
+            "type": "object",
+            "properties": {
+                "score": { "type": "number" },
+                "score_explanation": { "type": "string" },
+                "classification": { "type": "string", "enum": [
+                    "Sehr starkes Investment", "Solides Investment", "Prueffall", "Kritisch", "Nicht empfehlenswert"
+                ] }
+            },
+            "required": ["score", "score_explanation", "classification"],
+            "additionalProperties": False
+        },
+        "recommendation": { "type": "string", "enum": ["Kaufen", "Nachverhandeln", "Abstand nehmen"] }
     },
     "required": ["property_address", "document_types_analyzed", "overall_risk_level",
-                 "executive_summary", "red_flags", "financial_summary",
-                 "legal_risks", "open_questions"],
+                 "executive_summary", "completeness_check", "red_flags",
+                 "risk_assessment", "financial_summary", "kpis", "legal_risks",
+                 "strengths", "weaknesses", "open_questions", "investment_score",
+                 "recommendation"],
     "additionalProperties": False
 }
 ```
@@ -367,8 +429,9 @@ def upload_file_to_manus(file_path: str, file_name: str) -> str:
 def create_analysis_task(file_ids: list, schema: dict) -> str:
     skill_ids = [s for s in os.getenv("MANUS_FORCE_SKILL_IDS", "").split(",") if s]
     project_id = os.getenv("MANUS_PROJECT_ID")
-    prompt = """Du bist ein erfahrener Immobilien-Due-Diligence-Experte für den deutschen Markt.
-Analysiere das/die angehängte(n) Dokument(e) auf rechtliche, wirtschaftliche und technische Risiken.
+    prompt = """Du bist ein hochspezialisierter Immobilien-Due-Diligence-Experte fuer den deutschsprachigen Markt.
+Analysiere alle angehaengten Maklerunterlagen auf rechtliche, wirtschaftliche und technische Risiken.
+Berechne Kennzahlen, bewerte Risiken je Kategorie, und vergib einen Investment-Score.
 Wenn Informationen fehlen, erfinde nichts und liste sie als offene Punkte.
 Liefere deine Analyse exakt im geforderten JSON-Format."""
     message = {"content": prompt, "attachments": [{"file_id": fid} for fid in file_ids]}
@@ -477,6 +540,7 @@ async def main(message: cl.Message):
                 content=(f"## ✅ Analyse abgeschlossen\n\n"
                          f"**Objekt:** {result.get('property_address', '–')}\n"
                          f"**Gesamtrisiko:** {result.get('overall_risk_level', '–')}\n"
+                         f"**Investment-Score:** {result.get('investment_score', {}).get('score', '–')}\n"
                          f"**Red Flags:** {len(flags)} ({len(high)} kritisch)\n\n"
                          f"_{result.get('executive_summary', '')}_"),
                 elements=[cl.File(name="Due_Diligence_Bericht.pdf", path=pdf, display="inline")]

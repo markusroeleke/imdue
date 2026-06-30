@@ -8,7 +8,7 @@
 
 ## 1. Einleitung
 
-Dieses Dokument spezifiziert die Orchestrierung der KI-Intelligenz für die Immobilien-Due-Diligence-WebApp über die **Manus API**. Es definiert, wie "Agent Skills" und Projekt-Instruktionen kombiniert werden, um hochgeladene Immobiliendokumente (z.B. Grundbücher, Mietverträge, Gutachten) vollautomatisch zu analysieren.
+Dieses Dokument spezifiziert die Orchestrierung der KI-Intelligenz für die Immobilien-Due-Diligence-WebApp über die **Manus API**. Es definiert, wie "Agent Skills" und Projekt-Instruktionen kombiniert werden, um hochgeladene Maklerunterlagen (z.B. Exposés, Grundbücher, Mietverträge, Gutachten) vollautomatisch zu analysieren.
 
 Anstatt für jede Aufgabe den kompletten System-Prompt neu zu übergeben, nutzt die Architektur die Manus API-Funktion `project.create` für dauerhafte Instruktionen (Personas) und `task.create` in Kombination mit `force_skills` und `structured_output_schema` für die exakte Ausführung [1].
 
@@ -31,9 +31,9 @@ Um API-Kosten zu sparen und den Code sauber zu halten, wird beim initialen Setup
 **API Call:** `POST /v2/project.create`
 
 **Projekt-Instruktion (wird an alle Tasks vererbt):**
-> "Du bist ein hochqualifizierter Senior Real Estate Analyst und Due-Diligence-Experte für den deutschen Immobilienmarkt. Deine Aufgabe ist es, komplexe Immobiliendokumente (Grundbuchauszüge, Mietverträge, Teilungserklärungen, Gutachten) präzise zu analysieren. 
+> "Du bist ein hochqualifizierter Senior Real Estate Analyst und Due-Diligence-Experte für den deutschsprachigen Immobilienmarkt. Deine Aufgabe ist es, komplexe Maklerunterlagen (Exposés, Grundbuchauszüge, Mietverträge, Teilungserklärungen, Gutachten) präzise zu analysieren. 
 > 
-> Du arbeitest extrem akkurat, übersiehst keine rechtlichen Fallstricke (z.B. Dienstbarkeiten, Wegerechte, Indexmietklauseln) und bewertest wirtschaftliche Risiken (z.B. Leerstand, Instandhaltungsrückstau) objektiv. Deine Analysen müssen bundesweit für alle deutschen Bundesländer gültig und anwendbar sein. Wenn Informationen in den bereitgestellten Dokumenten fehlen, erfindest du nichts, sondern listest diese als 'Offene Fragen' auf. Du bist direkt, professionell und fokussierst dich ausschließlich auf Fakten und messbare Risiken."
+> Du arbeitest extrem akkurat, übersiehst keine rechtlichen Fallstricke (z.B. Dienstbarkeiten, Wegerechte, Indexmietklauseln) und bewertest wirtschaftliche Risiken (z.B. Leerstand, Instandhaltungsrückstau) objektiv. Wenn Informationen fehlen, erfindest du nichts, sondern listest diese als 'Offene Fragen' auf. Du denkst wie ein konservativer Investor, markierst Widersprueche und lieferst eine klare Empfehlung (Kaufen / Nachverhandeln / Abstand nehmen) inklusive Investment-Score (0-100)."
 
 ---
 
@@ -54,7 +54,7 @@ Folgende Skill-Kategorien sind für das MVP zwingend erforderlich und müssen in
 {
   "project_id": "proj_abc123",
   "message": {
-    "content": "Führe die vollständige Due-Diligence-Analyse für die angehängten Dokumente durch. Strukturiere die Ergebnisse strikt nach dem vorgegebenen Schema.",
+    "content": "Führe die vollständige Due-Diligence-Analyse für die angehängten Maklerunterlagen durch. Strukturiere die Ergebnisse strikt nach dem vorgegebenen Schema.",
     "attachments": [{"file_id": "file_xyz789"}],
     "force_skills": [
       "skill_advanced_ocr",
@@ -98,6 +98,15 @@ Das Schema muss strikte Regeln befolgen: `additionalProperties` muss auf `false`
       "type": "string",
       "description": "Zusammenfassung der wichtigsten Erkenntnisse in 2-3 Sätzen."
     },
+    "completeness_check": {
+      "type": "object",
+      "properties": {
+        "missing_documents": { "type": "array", "items": { "type": "string" } },
+        "missing_data_points": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["missing_documents", "missing_data_points"],
+      "additionalProperties": false
+    },
     "red_flags": {
       "type": "array",
       "items": {
@@ -113,6 +122,18 @@ Das Schema muss strikte Regeln befolgen: `additionalProperties` muss auf `false`
       },
       "description": "Kritische Risiken, priorisiert nach Schweregrad, mit Quelldokument."
     },
+    "risk_assessment": {
+      "type": "object",
+      "properties": {
+        "legal": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+        "financial": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+        "technical": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+        "location": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+        "tenant_default": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] }
+      },
+      "required": ["legal", "financial", "technical", "location", "tenant_default"],
+      "additionalProperties": false
+    },
     "financial_summary": {
       "type": "object",
       "properties": {
@@ -124,15 +145,55 @@ Das Schema muss strikte Regeln befolgen: `additionalProperties` muss auf `false`
       "required": ["current_rent_annual_eur", "estimated_market_rent_annual_eur", "vacancy_risk_assessment", "maintenance_backlog_notes"],
       "additionalProperties": false
     },
+    "kpis": {
+      "type": "object",
+      "properties": {
+        "price_per_sqm_eur": { "type": ["number", "null"] },
+        "rent_multiplier": { "type": ["number", "null"] },
+        "gross_yield_percent": { "type": ["number", "null"] },
+        "net_yield_percent": { "type": ["number", "null"] },
+        "cashflow_pre_financing_eur": { "type": ["number", "null"] },
+        "cashflow_post_financing_eur": { "type": ["number", "null"] },
+        "operating_cost_ratio_percent": { "type": ["number", "null"] },
+        "reserve_need_notes": { "type": "string" },
+        "sensitivity_analysis_notes": { "type": "string" }
+      },
+      "required": [
+        "price_per_sqm_eur", "rent_multiplier", "gross_yield_percent",
+        "net_yield_percent", "cashflow_pre_financing_eur",
+        "cashflow_post_financing_eur", "operating_cost_ratio_percent",
+        "reserve_need_notes", "sensitivity_analysis_notes"
+      ],
+      "additionalProperties": false
+    },
     "legal_risks": {
       "type": "array",
       "items": { "type": "string" },
       "description": "Rechtliche Risiken und Befunde aus den Dokumenten."
     },
+    "strengths": { "type": "array", "items": { "type": "string" } },
+    "weaknesses": { "type": "array", "items": { "type": "string" } },
     "open_questions": {
       "type": "array",
       "items": { "type": "string" },
       "description": "Wichtige Due-Diligence-Punkte, die aus den vorliegenden Dokumenten NICHT beantwortet werden können."
+    },
+    "investment_score": {
+      "type": "object",
+      "properties": {
+        "score": { "type": "number" },
+        "score_explanation": { "type": "string" },
+        "classification": {
+          "type": "string",
+          "enum": ["Sehr starkes Investment", "Solides Investment", "Prueffall", "Kritisch", "Nicht empfehlenswert"]
+        }
+      },
+      "required": ["score", "score_explanation", "classification"],
+      "additionalProperties": false
+    },
+    "recommendation": {
+      "type": "string",
+      "enum": ["Kaufen", "Nachverhandeln", "Abstand nehmen"]
     }
   },
   "required": [
@@ -140,10 +201,17 @@ Das Schema muss strikte Regeln befolgen: `additionalProperties` muss auf `false`
     "document_types_analyzed", 
     "overall_risk_level", 
     "executive_summary", 
+    "completeness_check",
     "red_flags", 
     "financial_summary", 
+    "risk_assessment",
+    "kpis",
     "legal_risks", 
-    "open_questions"
+    "strengths",
+    "weaknesses",
+    "open_questions",
+    "investment_score",
+    "recommendation"
   ],
   "additionalProperties": false
 }
