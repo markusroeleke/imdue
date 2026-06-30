@@ -1,0 +1,161 @@
+DUE_DILIGENCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "property_address": {"type": ["string", "null"]},
+        "document_types_analyzed": {"type": "array", "items": {"type": "string"}},
+        "overall_risk_level": {
+            "type": "string",
+            "enum": ["Low", "Medium", "High", "Critical"],
+        },
+        "executive_summary": {"type": "string"},
+        "completeness_check": {
+            "type": "object",
+            "properties": {
+                "missing_documents": {"type": "array", "items": {"type": "string"}},
+                "missing_data_points": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["missing_documents", "missing_data_points"],
+            "additionalProperties": False,
+        },
+        "red_flags": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": ["Rechtlich", "Wirtschaftlich", "Technisch", "Umwelt"],
+                    },
+                    "description": {"type": "string"},
+                    "severity": {
+                        "type": "string",
+                        "enum": ["Critical", "High", "Medium", "Low"],
+                    },
+                    "source_document": {"type": "string"},
+                },
+                "required": ["category", "description", "severity", "source_document"],
+                "additionalProperties": False,
+            },
+        },
+        "risk_assessment": {
+            "type": "object",
+            "properties": {
+                "legal": {
+                    "type": "string",
+                    "enum": ["Low", "Medium", "High", "Critical"],
+                },
+                "financial": {
+                    "type": "string",
+                    "enum": ["Low", "Medium", "High", "Critical"],
+                },
+                "technical": {
+                    "type": "string",
+                    "enum": ["Low", "Medium", "High", "Critical"],
+                },
+                "location": {
+                    "type": "string",
+                    "enum": ["Low", "Medium", "High", "Critical"],
+                },
+                "tenant_default": {
+                    "type": "string",
+                    "enum": ["Low", "Medium", "High", "Critical"],
+                },
+            },
+            "required": [
+                "legal",
+                "financial",
+                "technical",
+                "location",
+                "tenant_default",
+            ],
+            "additionalProperties": False,
+        },
+        "financial_summary": {
+            "type": "object",
+            "properties": {
+                "current_rent_annual_eur": {"type": ["number", "null"]},
+                "estimated_market_rent_annual_eur": {"type": ["number", "null"]},
+                "vacancy_risk_assessment": {"type": "string"},
+                "maintenance_backlog_notes": {"type": "string"},
+            },
+            "required": [
+                "current_rent_annual_eur",
+                "estimated_market_rent_annual_eur",
+                "vacancy_risk_assessment",
+                "maintenance_backlog_notes",
+            ],
+            "additionalProperties": False,
+        },
+        "kpis": {
+            "type": "object",
+            "properties": {
+                "price_per_sqm_eur": {"type": ["number", "null"]},
+                "rent_multiplier": {"type": ["number", "null"]},
+                "gross_yield_percent": {"type": ["number", "null"]},
+                "net_yield_percent": {"type": ["number", "null"]},
+                "cashflow_pre_financing_eur": {"type": ["number", "null"]},
+                "cashflow_post_financing_eur": {"type": ["number", "null"]},
+                "operating_cost_ratio_percent": {"type": ["number", "null"]},
+                "reserve_need_notes": {"type": "string"},
+                "sensitivity_analysis_notes": {"type": "string"},
+            },
+            "required": [
+                "price_per_sqm_eur",
+                "rent_multiplier",
+                "gross_yield_percent",
+                "net_yield_percent",
+                "cashflow_pre_financing_eur",
+                "cashflow_post_financing_eur",
+                "operating_cost_ratio_percent",
+                "reserve_need_notes",
+                "sensitivity_analysis_notes",
+            ],
+            "additionalProperties": False,
+        },
+        "legal_risks": {"type": "array", "items": {"type": "string"}},
+        "strengths": {"type": "array", "items": {"type": "string"}},
+        "weaknesses": {"type": "array", "items": {"type": "string"}},
+        "open_questions": {"type": "array", "items": {"type": "string"}},
+        "investment_score": {
+            "type": "object",
+            "properties": {
+                "score": {"type": "number"},
+                "score_explanation": {"type": "string"},
+                "classification": {
+                    "type": "string",
+                    "enum": [
+                        "Sehr starkes Investment",
+                        "Solides Investment",
+                        "Prueffall",
+                        "Kritisch",
+                        "Nicht empfehlenswert",
+                    ],
+                },
+            },
+            "required": ["score", "score_explanation", "classification"],
+            "additionalProperties": False,
+        },
+        "recommendation": {
+            "type": "string",
+            "enum": ["Kaufen", "Nachverhandeln", "Abstand nehmen"],
+        },
+    },
+    "required": [
+        "property_address",
+        "document_types_analyzed",
+        "overall_risk_level",
+        "executive_summary",
+        "completeness_check",
+        "red_flags",
+        "risk_assessment",
+        "financial_summary",
+        "kpis",
+        "legal_risks",
+        "strengths",
+        "weaknesses",
+        "open_questions",
+        "investment_score",
+        "recommendation",
+    ],
+    "additionalProperties": False,
+}

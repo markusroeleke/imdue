@@ -52,23 +52,26 @@ Die Anwendung ist vollständig in Python implementiert, was die Entwicklungszeit
 ### Projektstruktur (MVP minimal)
 
 ```
-due-diligence-mvp/
-├── app.py                  # Chainlit Frontend (Einstiegspunkt)
-├── manus_client.py         # Manus API Kommunikation
-├── schema.py               # Structured Output Schema
-├── pdf_generator.py        # PDF-Rendering
-├── templates/
-│   └── report.html         # Jinja2 PDF-Template
+imdue/
+├── src/
+│   ├── app.py              # Chainlit Frontend (Einstiegspunkt)
+│   ├── manus_client.py     # Manus API Kommunikation
+│   ├── schema.py           # Structured Output Schema
+│   ├── pdf_generator.py    # PDF-Rendering
+│   └── templates/
+│       └── report.html     # Jinja2 PDF-Template
 ├── reports/                # Generierte PDFs (lokal gespeichert)
 ├── .env                    # Umgebungsvariablen (NICHT in Git!)
 ├── requirements.txt        # Python-Abhängigkeiten
+├── README.md               # readme
 ├── Dockerfile
 └── docker-compose.yml
 
 # Optional in Phase 2 (Auth + Persistenz)
-# ├── models.py              # Datenbankmodelle (SQLAlchemy)
-# ├── api.py                 # FastAPI App
-# └── migrations/            # Alembic Migrations
+# └── src/
+#     ├── models.py          # Datenbankmodelle (SQLAlchemy)
+#     ├── api.py             # FastAPI App
+#     └── migrations/        # Alembic Migrations
 ```
 
 ---
@@ -389,7 +392,7 @@ python -m venv venv
 venv\Scripts\Activate.ps1
 # macOS/Linux
 # source venv/bin/activate
-mkdir templates reports
+mkdir -p src/templates reports
 pip install chainlit requests weasyprint jinja2 python-dotenv
 
 # Optional für Phase 2 (Auth + Persistenz)
@@ -406,7 +409,7 @@ MANUS_FORCE_SKILL_IDS=skill_id_1,skill_id_2
 MANUS_PROJECT_ID=proj_abc123
 ```
 
-### Schritt 2: Manus API Client (`manus_client.py`)
+### Schritt 2: Manus API Client (`src/manus_client.py`)
 
 ```python
 import os, time, requests
@@ -461,7 +464,7 @@ def poll_for_result(task_id: str, timeout: int = 300) -> dict:
     raise TimeoutError(f"Task {task_id} Timeout nach {timeout}s.")
 ```
 
-### Schritt 3: PDF-Generator (`pdf_generator.py`)
+### Schritt 3: PDF-Generator (`src/pdf_generator.py`)
 
 ```python
 import os
@@ -471,22 +474,22 @@ from weasyprint import HTML
 
 def generate_pdf(json_data: dict, output_path: str) -> str:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    env = Environment(loader=FileSystemLoader("templates"))
+    env = Environment(loader=FileSystemLoader("src/templates"))
     html = env.get_template("report.html").render(
         data=json_data, created_at=datetime.now().strftime("%d.%m.%Y %H:%M Uhr"))
     HTML(string=html).write_pdf(output_path)
     return output_path
 ```
 
-### Schritt 4: Chainlit App (`app.py`)
+### Schritt 4: Chainlit App (`src/app.py`)
 
 ```python
 import os, uuid, asyncio
 import chainlit as cl
 from dotenv import load_dotenv
-from manus_client import upload_file_to_manus, create_analysis_task, poll_for_result
-from schema import DUE_DILIGENCE_SCHEMA
-from pdf_generator import generate_pdf
+from src.manus_client import upload_file_to_manus, create_analysis_task, poll_for_result
+from src.schema import DUE_DILIGENCE_SCHEMA
+from src.pdf_generator import generate_pdf
 load_dotenv()
 
 @cl.on_chat_start
@@ -532,7 +535,7 @@ async def main(message: cl.Message):
             result = await asyncio.get_event_loop().run_in_executor(
                 None, poll_for_result, task_id)
             msg.content = "📄 Erstelle PDF-Bericht…"; await msg.update()
-            pdf = f"reports/report_{uuid.uuid4().hex[:8]}.pdf"
+            pdf = f"../reports/report_{uuid.uuid4().hex[:8]}.pdf"
             generate_pdf(result, pdf)
             flags = result.get("red_flags", [])
             high = [f for f in flags if f["severity"] in ["High", "Critical"]]
@@ -555,7 +558,7 @@ async def main(message: cl.Message):
 ### Schritt 5: Starten
 
 ```bash
-chainlit run app.py -w
+chainlit run src/app.py -w
 # Erreichbar unter: http://localhost:8000
 ```
 
@@ -577,7 +580,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN mkdir -p reports
 EXPOSE 8000
-CMD ["chainlit", "run", "app.py", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["chainlit", "run", "src/app.py", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
 ### docker-compose.yml

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>Immobilien Due Diligence Bericht</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 11pt; color: #1a1a1a; line-height: 1.5; }
+    @page { margin: 20mm 18mm; @bottom-center { content: "Seite " counter(page) " von " counter(pages); font-size: 9pt; color: #888; } }
+
+    header { border-bottom: 3px solid #1a3a5c; padding-bottom: 10px; margin-bottom: 20px; }
+    header h1 { font-size: 20pt; color: #1a3a5c; }
+    header .meta { font-size: 9pt; color: #555; margin-top: 4px; }
+
+    h2 { font-size: 13pt; color: #1a3a5c; border-bottom: 1px solid #cdd8e3; padding-bottom: 4px; margin: 24px 0 10px; }
+    h3 { font-size: 11pt; color: #2c5282; margin: 14px 0 6px; }
+
+    p { margin-bottom: 8px; }
+    ul { margin: 4px 0 10px 18px; }
+    li { margin-bottom: 3px; }
+
+    /* Risk badge */
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 9pt; font-weight: bold; color: #fff; }
+    .badge-Low      { background: #2e7d32; }
+    .badge-Medium   { background: #f57c00; }
+    .badge-High     { background: #c62828; }
+    .badge-Critical { background: #6a1010; }
+
+    /* Score */
+    .score-box { display: inline-block; background: #1a3a5c; color: #fff; font-size: 26pt; font-weight: bold; padding: 6px 20px; border-radius: 8px; }
+    .classification { font-size: 12pt; font-weight: bold; margin-top: 4px; }
+    .recommendation { font-size: 13pt; font-weight: bold; margin-top: 10px; padding: 8px 14px; border-radius: 6px; display: inline-block; }
+    .rec-Kaufen          { background: #e8f5e9; color: #1b5e20; border: 1px solid #a5d6a7; }
+    .rec-Nachverhandeln  { background: #fff8e1; color: #e65100; border: 1px solid #ffe082; }
+    .rec-Abstand_nehmen  { background: #ffebee; color: #b71c1c; border: 1px solid #ef9a9a; }
+
+    /* KPI grid */
+    .kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+    .kpi-card { background: #f0f4f9; border-radius: 6px; padding: 10px 12px; }
+    .kpi-label { font-size: 8.5pt; color: #555; }
+    .kpi-value { font-size: 14pt; font-weight: bold; color: #1a3a5c; }
+    .kpi-na    { font-size: 11pt; color: #aaa; }
+
+    /* Risk table */
+    table { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 10pt; }
+    th { background: #1a3a5c; color: #fff; text-align: left; padding: 6px 8px; }
+    td { padding: 5px 8px; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
+    tr:nth-child(even) td { background: #f7f9fc; }
+
+    /* Risk assessment summary */
+    .risk-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .risk-item { flex: 1; min-width: 100px; background: #f0f4f9; border-radius: 6px; padding: 8px 10px; text-align: center; }
+    .risk-item .rl { font-size: 8pt; color: #555; }
+    .risk-item .rv { font-size: 10pt; font-weight: bold; }
+
+    /* Lists */
+    .check-list { list-style: none; margin-left: 0; }
+    .check-list li::before { content: "✓ "; color: #2e7d32; font-weight: bold; }
+    .warn-list { list-style: none; margin-left: 0; }
+    .warn-list li::before { content: "⚠ "; color: #c62828; }
+    .q-list li::before { content: "? "; color: #1a3a5c; font-weight: bold; }
+    .q-list { list-style: none; margin-left: 0; }
+
+    footer { margin-top: 30px; border-top: 1px solid #ccc; padding-top: 8px; font-size: 8.5pt; color: #888; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Immobilien Due Diligence Bericht</h1>
+  <div class="meta">
+    Objekt: <strong>{{ data.property_address or "Adresse nicht angegeben" }}</strong>
+    &nbsp;|&nbsp; Erstellt: {{ created_at }}
+    &nbsp;|&nbsp; Gesamtrisiko:
+    <span class="badge badge-{{ data.overall_risk_level }}">{{ data.overall_risk_level }}</span>
+  </div>
+</header>
+
+<!-- 1. Executive Summary -->
+<h2>1. Executive Summary</h2>
+<p>{{ data.executive_summary }}</p>
+
+<div style="margin-top:12px; display:flex; gap:24px; align-items:flex-start;">
+  <div>
+    <div class="score-box">{{ data.investment_score.score | int }}</div>
+    <div class="classification">{{ data.investment_score.classification }}</div>
+  </div>
+  <div>
+    <div style="font-size:9pt;color:#555;margin-bottom:4px;">Empfehlung</div>
+    <div class="recommendation rec-{{ data.recommendation | replace(' ', '_') }}">
+      {{ data.recommendation }}
+    </div>
+    <p style="margin-top:8px;font-size:9.5pt;">{{ data.investment_score.score_explanation }}</p>
+  </div>
+</div>
+
+<!-- 2. Vollständigkeitscheck -->
+<h2>2. Vollständigkeitscheck</h2>
+{% if data.completeness_check.missing_documents or data.completeness_check.missing_data_points %}
+  {% if data.completeness_check.missing_documents %}
+    <h3>Fehlende Unterlagen</h3>
+    <ul class="warn-list">
+      {% for d in data.completeness_check.missing_documents %}<li>{{ d }}</li>{% endfor %}
+    </ul>
+  {% endif %}
+  {% if data.completeness_check.missing_data_points %}
+    <h3>Fehlende Datenpunkte</h3>
+    <ul class="warn-list">
+      {% for d in data.completeness_check.missing_data_points %}<li>{{ d }}</li>{% endfor %}
+    </ul>
+  {% endif %}
+{% else %}
+  <p>Alle wesentlichen Unterlagen wurden bereitgestellt.</p>
+{% endif %}
+
+<!-- 3. Analysierte Dokumente -->
+<h2>3. Analysierte Dokumente</h2>
+<ul>
+  {% for d in data.document_types_analyzed %}<li>{{ d }}</li>{% endfor %}
+</ul>
+
+<!-- 4. Kennzahlen -->
+<h2>4. Kennzahlen</h2>
+{% set k = data.kpis %}
+<div class="kpi-grid">
+  <div class="kpi-card">
+    <div class="kpi-label">Kaufpreis / m²</div>
+    {% if k.price_per_sqm_eur is not none %}<div class="kpi-value">{{ "%.0f"|format(k.price_per_sqm_eur) }} €</div>{% else %}<div class="kpi-na">k. A.</div>{% endif %}
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Faktor (Kaufpreis / Jahresnettokaltmiete)</div>
+    {% if k.rent_multiplier is not none %}<div class="kpi-value">{{ "%.1f"|format(k.rent_multiplier) }}x</div>{% else %}<div class="kpi-na">k. A.</div>{% endif %}
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Bruttorendite</div>
+    {% if k.gross_yield_percent is not none %}<div class="kpi-value">{{ "%.2f"|format(k.gross_yield_percent) }} %</div>{% else %}<div class="kpi-na">k. A.</div>{% endif %}
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Nettorendite</div>
+    {% if k.net_yield_percent is not none %}<div class="kpi-value">{{ "%.2f"|format(k.net_yield_percent) }} %</div>{% else %}<div class="kpi-na">k. A.</div>{% endif %}
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Cashflow vor Finanzierung</div>
+    {% if k.cashflow_pre_financing_eur is not none %}<div class="kpi-value">{{ "%.0f"|format(k.cashflow_pre_financing_eur) }} €/Jahr</div>{% else %}<div class="kpi-na">k. A.</div>{% endif %}
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Cashflow nach Finanzierung</div>
+    {% if k.cashflow_post_financing_eur is not none %}<div class="kpi-value">{{ "%.0f"|format(k.cashflow_post_financing_eur) }} €/Jahr</div>{% else %}<div class="kpi-na">k. A.</div>{% endif %}
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Bewirtschaftungskostenquote</div>
+    {% if k.operating_cost_ratio_percent is not none %}<div class="kpi-value">{{ "%.1f"|format(k.operating_cost_ratio_percent) }} %</div>{% else %}<div class="kpi-na">k. A.</div>{% endif %}
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Ist-Miete p.a.</div>
+    {% if data.financial_summary.current_rent_annual_eur is not none %}<div class="kpi-value">{{ "%.0f"|format(data.financial_summary.current_rent_annual_eur) }} €</div>{% else %}<div class="kpi-na">k. A.</div>{% endif %}
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Marktmiete p.a. (Schätzung)</div>
+    {% if data.financial_summary.estimated_market_rent_annual_eur is not none %}<div class="kpi-value">{{ "%.0f"|format(data.financial_summary.estimated_market_rent_annual_eur) }} €</div>{% else %}<div class="kpi-na">k. A.</div>{% endif %}
+  </div>
+</div>
+{% if k.reserve_need_notes %}<p><strong>Rücklagenbedarf:</strong> {{ k.reserve_need_notes }}</p>{% endif %}
+{% if k.sensitivity_analysis_notes %}<p><strong>Sensitivität:</strong> {{ k.sensitivity_analysis_notes }}</p>{% endif %}
+{% if data.financial_summary.vacancy_risk_assessment %}<p><strong>Leerstandsrisiko:</strong> {{ data.financial_summary.vacancy_risk_assessment }}</p>{% endif %}
+{% if data.financial_summary.maintenance_backlog_notes %}<p><strong>Instandhaltungsrückstau:</strong> {{ data.financial_summary.maintenance_backlog_notes }}</p>{% endif %}
+
+<!-- 5. Risikoanalyse -->
+<h2>5. Risikoanalyse</h2>
+{% set ra = data.risk_assessment %}
+<div class="risk-row">
+  {% for label, key in [("Rechtlich","legal"),("Wirtschaftlich","financial"),("Technisch","technical"),("Standort","location"),("Mietausfall","tenant_default")] %}
+  <div class="risk-item">
+    <div class="rl">{{ label }}</div>
+    <div class="rv"><span class="badge badge-{{ ra[key] }}">{{ ra[key] }}</span></div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Red Flags -->
+{% if data.red_flags %}
+<h3>Red Flags</h3>
+<table>
+  <thead><tr><th>Kategorie</th><th>Befund</th><th>Schwere</th><th>Quelldokument</th></tr></thead>
+  <tbody>
+    {% for f in data.red_flags | sort(attribute="severity", reverse=True) %}
+    <tr>
+      <td>{{ f.category }}</td>
+      <td>{{ f.description }}</td>
+      <td><span class="badge badge-{{ f.severity }}">{{ f.severity }}</span></td>
+      <td>{{ f.source_document }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<!-- Legal Risks -->
+{% if data.legal_risks %}
+<h3>Rechtliche Risiken</h3>
+<ul class="warn-list">
+  {% for r in data.legal_risks %}<li>{{ r }}</li>{% endfor %}
+</ul>
+{% endif %}
+
+<!-- 6. Stärken & Schwächen -->
+<h2>6. Stärken &amp; Schwächen</h2>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+  <div>
+    <h3>Stärken</h3>
+    <ul class="check-list">
+      {% for s in data.strengths %}<li>{{ s }}</li>{% endfor %}
+    </ul>
+  </div>
+  <div>
+    <h3>Schwächen</h3>
+    <ul class="warn-list">
+      {% for w in data.weaknesses %}<li>{{ w }}</li>{% endfor %}
+    </ul>
+  </div>
+</div>
+
+<!-- 7. Offene Punkte -->
+{% if data.open_questions %}
+<h2>7. Offene Punkte</h2>
+<ul class="q-list">
+  {% for q in data.open_questions %}<li>{{ q }}</li>{% endfor %}
+</ul>
+{% endif %}
+
+<footer>
+  Dieser Bericht wurde automatisch durch die Immobilien Due Diligence KI generiert und ersetzt keine rechtliche oder steuerliche Beratung.
+  Erstellt am {{ created_at }}.
+</footer>
+
+</body>
+</html>
