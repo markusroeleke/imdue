@@ -86,10 +86,12 @@ def create_analysis_task(file_ids: list, schema: dict) -> str:
         "Wenn Informationen fehlen, erfinde nichts und liste sie als offene Punkte.\n"
         "Liefere deine Analyse exakt im geforderten JSON-Format."
     )
-    message: dict = {
-        "content": prompt,
-        "attachments": [{"file_id": fid} for fid in file_ids],
-    }
+    # Per API spec: files are ContentPart objects in the content array,
+    # not a separate "attachments" field.
+    content_parts: list = [{"type": "text", "text": prompt}]
+    for fid in file_ids:
+        content_parts.append({"type": "file", "file_id": fid})
+    message: dict = {"content": content_parts}
     if skill_ids:
         message["force_skills"] = skill_ids
     payload: dict = {"message": message, "structured_output_schema": schema}

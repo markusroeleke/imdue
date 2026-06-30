@@ -199,7 +199,6 @@ async def main(message: cl.Message) -> None:
                     cl.File(
                         name="Due_Diligence_Bericht.md",
                         path=md_path,
-                        display="inline",
                     )
                 ],
             ).send()
