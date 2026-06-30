@@ -1,14 +1,28 @@
-# Welcome to Chainlit! 🚀🤖
+# 🏠 Real Estate Due Diligence AI
 
-Hi there, Developer! 👋 We're excited to have you on board. Chainlit is a powerful tool designed to help you prototype, debug and share applications built on top of LLMs.
+Upload your property documents and receive a structured due diligence report with risk assessment, financial KPIs and an investment score — all in minutes.
 
-## Useful Links 🔗
+---
 
-- **Documentation:** Get started with our comprehensive [Chainlit Documentation](https://docs.chainlit.io) 📚
-- **Discord Community:** Join our friendly [Chainlit Discord](https://discord.gg/k73SQ3FyUh) to ask questions, share your projects, and connect with other developers! 💬
+## How it works
 
-We can't wait to see what you create with Chainlit! Happy coding! 💻😊
+1. **Upload documents** — drag and drop one or more files into the chat (PDF, DOCX, JPG, PNG).  
+   *Supported: Exposé · Land register · Lease agreements · Energy certificate · Floor plans · WEG minutes · Technical reports · Purchase contract draft · Site map · Contamination report*
 
-## Welcome screen
+2. **Start analysis** — type `analyse` (or `report`, `start`, `auswerten`).
 
-To modify the welcome screen, edit the `chainlit.md` file at the root of your project. If you do not want a welcome screen, just leave this file empty.
+3. **Read the report** — the full due diligence report appears directly in the chat, including:
+   - Executive summary & overall risk level
+   - Financial KPIs (yield, multiplier, cash flow)
+   - Risk assessment per category (legal, financial, technical, location, tenant default)
+   - Red flags sorted by severity
+   - Investment score 0–100 with classification
+   - Recommendation: Buy / Renegotiate / Walk away
+
+4. **Download** — the report is also available as a `.md` file.
+
+5. **Ask follow-up questions** — after the analysis you can ask anything about the results, e.g. *"Explain the land charge in detail"* or *"What would the yield be at a 10 % discount?"*
+
+---
+
+> **Privacy:** Uploaded documents are automatically deleted from the analysis service after 48 hours.
