@@ -96,7 +96,15 @@ def poll_for_result(task_id: str, timeout: int = 600) -> dict:
     raise TimeoutError(f"Task {task_id} Timeout nach {timeout}s.")
 
 
-def get_available_skills() -> list:
-    res = requests.get(f"{MANUS_API_URL}/skill.list", headers=_headers(), timeout=30)
+def get_available_skills(project_id: str | None = None) -> list:
+    params: dict = {}
+    if project_id:
+        params["project_id"] = project_id
+    res = requests.get(
+        f"{MANUS_API_URL}/skill.list",
+        headers=_headers(),
+        params=params or None,
+        timeout=30,
+    )
     res.raise_for_status()
     return res.json().get("data", [])

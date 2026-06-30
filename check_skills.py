@@ -69,7 +69,7 @@ if __name__ == "__main__":
     print(f"  MANUS_PROJECT_ID      : {current_project or '(not set)'}")
     print("─" * 70)
 
-    skills = get_available_skills()
+    skills = get_available_skills(project_id=current_project or None)
     if not skills:
         print("No skills returned. Check your MANUS_API_KEY.")
     else:
