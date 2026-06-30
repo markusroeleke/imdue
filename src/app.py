@@ -1,4 +1,5 @@
 import asyncio
+import shutil
 import sys
 import uuid
 from contextlib import suppress
@@ -23,10 +24,31 @@ from src.schema import DUE_DILIGENCE_SCHEMA
 
 load_dotenv()
 
-REPORTS_DIR = Path(__file__).parent.parent / "reports"
+BASE_DIR = Path(__file__).parent.parent
+REPORTS_DIR = BASE_DIR / "reports"
 REPORTS_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR = BASE_DIR / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
 
 TRIGGER_WORDS = {"analyse", "analysieren", "bericht", "start", "auswerten"}
+
+
+def _persist_upload(temp_path: str, original_name: str | None) -> dict:
+    """Store user upload on disk until Manus analysis starts."""
+    source = Path(temp_path)
+    display_name = original_name or source.name
+    safe_name = Path(display_name).name
+    dest = UPLOAD_DIR / f"{uuid.uuid4().hex}_{safe_name}"
+    shutil.copy2(source, dest)
+    return {"name": safe_name, "path": str(dest)}
+
+
+def _cleanup_pending_files(pending_files: list[dict]) -> None:
+    for info in pending_files:
+        path = Path(info.get("path", ""))
+        with suppress(OSError):
+            if path.exists():
+                path.unlink()
 
 
 async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
@@ -77,8 +99,7 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
 
 @cl.on_chat_start
 async def start() -> None:
-    cl.user_session.set("file_ids", [])
-    cl.user_session.set("file_names", [])
+    cl.user_session.set("pending_files", [])
     cl.user_session.set("task_id", None)
     await cl.Message(
         content=(
@@ -93,8 +114,7 @@ async def start() -> None:
 
 @cl.on_message
 async def main(message: cl.Message) -> None:
-    file_ids: list = cl.user_session.get("file_ids", [])
-    file_names: list = cl.user_session.get("file_names", [])
+    pending_files: list = cl.user_session.get("pending_files", [])
     task_id: str | None = cl.user_session.get("task_id")
 
     # --- Datei-Upload ---
@@ -103,12 +123,10 @@ async def main(message: cl.Message) -> None:
             if hasattr(el, "path") and el.path:
                 msg = await cl.Message(content=f"Lade `{el.name}` hoch …").send()
                 try:
-                    fid = upload_file_to_manus(el.path, el.name)
-                    file_ids.append(fid)
-                    file_names.append(el.name)
-                    cl.user_session.set("file_ids", file_ids)
-                    cl.user_session.set("file_names", file_names)
-                    msg.content = f"✅ `{el.name}` hochgeladen ({len(file_ids)} Dokument(e) gesamt)."
+                    record = _persist_upload(el.path, getattr(el, "name", None))
+                    pending_files.append(record)
+                    cl.user_session.set("pending_files", pending_files)
+                    msg.content = f"✅ `{record['name']}` gespeichert ({len(pending_files)} Dokument(e) gesamt)."
                     await msg.update()
                 except Exception as exc:
                     msg.content = f"❌ Upload fehlgeschlagen: {exc}"
@@ -117,23 +135,37 @@ async def main(message: cl.Message) -> None:
 
     # --- Analyse starten ---
     if message.content.lower().strip() in TRIGGER_WORDS:
-        if not file_ids:
+        if not pending_files:
             await cl.Message(content="Bitte zuerst Dokumente hochladen.").send()
             return
 
         msg = await cl.Message(
-            content=f"Starte Analyse für {len(file_ids)} Dokument(e) …"
+            content=f"Starte Analyse für {len(pending_files)} Dokument(e) …"
         ).send()
         try:
-            new_task_id = create_analysis_task(file_ids, DUE_DILIGENCE_SCHEMA)
-            cl.user_session.set("task_id", new_task_id)
+            loop = asyncio.get_running_loop()
+            file_ids: list[str] = []
+            total = len(pending_files)
+            for idx, info in enumerate(pending_files, start=1):
+                msg.content = f"⬆️ Lade Dokument {idx}/{total} zu Manus …"
+                await msg.update()
+                fid = await loop.run_in_executor(
+                    None, upload_file_to_manus, info["path"], info["name"]
+                )
+                file_ids.append(fid)
+
             msg.content = "🔍 KI analysiert Dokumente …"
             await msg.update()
+
+            new_task_id = await loop.run_in_executor(
+                None, create_analysis_task, file_ids, DUE_DILIGENCE_SCHEMA
+            )
+            cl.user_session.set("task_id", new_task_id)
 
             status_task = asyncio.create_task(stream_status_updates(new_task_id, msg))
 
             try:
-                result: dict = await asyncio.get_running_loop().run_in_executor(
+                result: dict = await loop.run_in_executor(
                     None, poll_for_result, new_task_id
                 )
             finally:
@@ -178,6 +210,9 @@ async def main(message: cl.Message) -> None:
 
         except Exception as exc:
             await cl.Message(content=f"❌ Fehler bei der Analyse: {exc}").send()
+        else:
+            _cleanup_pending_files(pending_files)
+            cl.user_session.set("pending_files", [])
         return
 
     # --- Nachfragen nach abgeschlossener Analyse ---
