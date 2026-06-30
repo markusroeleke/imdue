@@ -1,17 +1,22 @@
 import asyncio
+import sys
 import uuid
 from pathlib import Path
+
+# Ensure the project root is on sys.path when Chainlit loads this file directly
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import chainlit as cl
 from dotenv import load_dotenv
 
 from src.manus_client import (
     create_analysis_task,
+    poll_for_followup_reply,
     poll_for_result,
     send_followup_message,
     upload_file_to_manus,
 )
-from src.pdf_generator import generate_pdf
+from src.pdf_generator import generate_markdown, save_report
 from src.schema import DUE_DILIGENCE_SCHEMA
 
 load_dotenv()
@@ -33,7 +38,7 @@ async def start() -> None:
             "1. Lade deine Maklerunterlagen hoch (Exposé, Grundbuch, Mietverträge, Gutachten …)\n"
             "2. Tippe `analyse` für den vollständigen Bericht\n"
             "3. Nach der Analyse kannst du Rückfragen stellen\n"
-            "4. Du erhältst einen PDF-Bericht zum Download"
+            "4. Du erhältst einen Bericht zum Download"
         )
     ).send()
 
@@ -44,7 +49,7 @@ async def main(message: cl.Message) -> None:
     file_names: list = cl.user_session.get("file_names", [])
     task_id: str | None = cl.user_session.get("task_id")
 
-    # --- File upload ---
+    # --- Datei-Upload ---
     if message.elements:
         for el in message.elements:
             if hasattr(el, "path") and el.path:
@@ -62,7 +67,7 @@ async def main(message: cl.Message) -> None:
                     await msg.update()
         return
 
-    # --- Trigger analysis ---
+    # --- Analyse starten ---
     if message.content.lower().strip() in TRIGGER_WORDS:
         if not file_ids:
             await cl.Message(content="Bitte zuerst Dokumente hochladen.").send()
@@ -77,15 +82,16 @@ async def main(message: cl.Message) -> None:
             msg.content = "🔍 KI analysiert Dokumente …"
             await msg.update()
 
-            result: dict = await asyncio.get_event_loop().run_in_executor(
+            result: dict = await asyncio.get_running_loop().run_in_executor(
                 None, poll_for_result, new_task_id
             )
 
-            msg.content = "📄 Erstelle PDF-Bericht …"
+            msg.content = "📄 Erstelle Bericht …"
             await msg.update()
 
-            pdf_path = str(REPORTS_DIR / f"report_{uuid.uuid4().hex[:8]}.pdf")
-            generate_pdf(result, pdf_path)
+            report_md = generate_markdown(result)
+            md_path = str(REPORTS_DIR / f"report_{uuid.uuid4().hex[:8]}.md")
+            save_report(report_md, md_path)
 
             flags = result.get("red_flags", [])
             high = [f for f in flags if f["severity"] in ["High", "Critical"]]
@@ -100,13 +106,16 @@ async def main(message: cl.Message) -> None:
                     f"{score_obj.get('classification', '–')}\n"
                     f"**Empfehlung:** {result.get('recommendation', '–')}\n"
                     f"**Red Flags:** {len(flags)} ({len(high)} kritisch)\n\n"
-                    f"_{result.get('executive_summary', '')}_\n\n"
-                    "Stelle gerne Rückfragen zu einzelnen Punkten."
+                    "Vollständiger Bericht:↓"
                 ),
+            ).send()
+            await cl.Message(content=report_md).send()
+            await cl.Message(
+                content="Bericht als Datei:",
                 elements=[
                     cl.File(
-                        name="Due_Diligence_Bericht.pdf",
-                        path=pdf_path,
+                        name="Due_Diligence_Bericht.md",
+                        path=md_path,
                         display="inline",
                     )
                 ],
@@ -116,29 +125,15 @@ async def main(message: cl.Message) -> None:
             await cl.Message(content=f"❌ Fehler bei der Analyse: {exc}").send()
         return
 
-    # --- Follow-up questions after analysis ---
+    # --- Nachfragen nach abgeschlossener Analyse ---
     if task_id:
         try:
-            await asyncio.get_event_loop().run_in_executor(
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
                 None, send_followup_message, task_id, message.content
             )
-            # Poll for the plain-text reply (no structured output)
-            events_res = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: __import__("requests").get(
-                    "https://api.manus.ai/v2/task.listMessages",
-                    headers=__import__(
-                        "src.manus_client", fromlist=["_headers"]
-                    )._headers(),
-                    params={"task_id": task_id, "order": "desc", "limit": 5},
-                    timeout=30,
-                ),
-            )
-            events_res.raise_for_status()
-            for e in events_res.json().get("data", []):
-                if e.get("type") == "assistant_message":
-                    await cl.Message(content=e.get("content", "")).send()
-                    return
+            reply = await loop.run_in_executor(None, poll_for_followup_reply, task_id)
+            await cl.Message(content=reply or "(Keine Antwort erhalten)").send()
         except Exception as exc:
             await cl.Message(content=f"❌ Fehler: {exc}").send()
         return

@@ -11,21 +11,6 @@ KI-gestützte Due-Diligence-Analyse für Immobilien-Kaufobjekte. Maklerunterlage
 | Python | 3.11+ |
 | pip | aktuell |
 | Manus API Key | [manus.ai](https://manus.ai) |
-| WeasyPrint-Systemabhängigkeiten | siehe unten |
-
-### WeasyPrint-Systemabhängigkeiten
-
-**Linux / Debian/Ubuntu:**
-```bash
-sudo apt-get install libpango-1.0-0 libpangoft2-1.0-0 libpangocairo-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 libffi-dev
-```
-
-**macOS (Homebrew):**
-```bash
-brew install pango cairo gdk-pixbuf libffi
-```
-
-**Windows:** WeasyPrint wird unter Windows über GTK bereitgestellt. Lade den [GTK3 Runtime Installer](https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer/releases) herunter und installiere ihn.
 
 ---
 
@@ -107,7 +92,8 @@ Beim ersten Start wird das Image gebaut. Die App ist danach unter **http://local
 
 1. **Dokumente hochladen** – Ziehe Maklerunterlagen (Exposé, Grundbuch, Mietverträge, Gutachten …) in das Chat-Fenster.
 2. **Analyse starten** – Tippe `analyse` (oder `bericht`, `start`, `auswerten`).
-3. **Bericht herunterladen** – Der fertige PDF-Bericht erscheint direkt im Chat.
+3. **Bericht lesen** – Der vollständige Bericht erscheint direkt im Chat als Markdown.
+4. **Bericht herunterladen** – Die `.md`-Datei steht als Dateidownload bereit.
 4. **Rückfragen stellen** – Nach der Analyse kannst du Folgefragen stellen (z. B. *„Erkläre das Wegerecht im Detail"*).
 
 ---
@@ -147,7 +133,6 @@ Exposé · Grundbuchauszug · Mietvertrag / Mieterliste · Energieausweis · Bau
 | :--- | :--- | :--- |
 | `EnvironmentError: MANUS_API_KEY is not set` | `.env` fehlt oder nicht geladen | `.env.example` kopieren und befüllen |
 | `TimeoutError` beim Polling | Task dauert >10 Min. | `timeout`-Parameter in `poll_for_result` erhöhen |
-| `WeasyPrint` schlägt fehl | Fehlende Systemabhängigkeiten | Systemabhängigkeiten (siehe oben) installieren |
 | `HTTP 429` von Manus API | Rate Limit überschritten | Kurz warten; Exponential Backoff erwägen |
 | Port 8000 belegt | Anderer Prozess läuft | `chainlit run src/app.py --port 8001` |
 

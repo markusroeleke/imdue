@@ -1,5 +1,7 @@
+import mimetypes
 import os
 import time
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
@@ -17,16 +19,33 @@ def _headers() -> dict:
 
 
 def upload_file_to_manus(file_path: str, file_name: str) -> str:
+    # Use only the basename — no path separators that could cause a 400
+    safe_name = Path(file_name).name or Path(file_path).name
+    mime_type, _ = mimetypes.guess_type(safe_name)
+    mime_type = mime_type or "application/octet-stream"
+
     res = requests.post(
         f"{MANUS_API_URL}/file.upload",
         headers=_headers(),
-        json={"file_name": file_name},
+        json={"filename": safe_name, "mime_type": mime_type},
         timeout=30,
     )
-    res.raise_for_status()
+    if not res.ok:
+        raise RuntimeError(
+            f"file.upload fehlgeschlagen ({res.status_code}): {res.text}"
+        )
     data = res.json()
     with open(file_path, "rb") as f:
-        requests.put(data["upload_url"], data=f, timeout=120).raise_for_status()
+        put_res = requests.put(
+            data["upload_url"],
+            data=f,
+            headers={"Content-Type": mime_type},
+            timeout=120,
+        )
+        if not put_res.ok:
+            raise RuntimeError(
+                f"PUT upload fehlgeschlagen ({put_res.status_code}): {put_res.text}"
+            )
     return data["file"]["id"]
 
 
@@ -68,6 +87,21 @@ def send_followup_message(task_id: str, content: str) -> None:
         timeout=30,
     )
     res.raise_for_status()
+
+
+def poll_for_followup_reply(task_id: str) -> str:
+    """Return the latest assistant_message text for a follow-up turn."""
+    res = requests.get(
+        f"{MANUS_API_URL}/task.listMessages",
+        headers=_headers(),
+        params={"task_id": task_id, "order": "desc", "limit": 5},
+        timeout=30,
+    )
+    res.raise_for_status()
+    for event in res.json().get("data", []):
+        if event.get("type") == "assistant_message":
+            return event.get("content", "")
+    return ""
 
 
 def poll_for_result(task_id: str, timeout: int = 600) -> dict:
