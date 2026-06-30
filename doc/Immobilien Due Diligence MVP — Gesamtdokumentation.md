@@ -196,15 +196,26 @@ python check_skills.py
 
 ```python
 # check_skills.py
-from manus_client import get_available_skills
+from src.manus_client import get_available_skills
 for skill in get_available_skills():
     print(f"ID: {skill['id']} | Name: {skill['name']}")
 ```
 
 Relevante Skill-IDs in `.env` eintragen:
 ```env
+# MVP: kommagetrennte Liste aller Force-Skill-IDs (für einfachen Einzel-Task)
 MANUS_FORCE_SKILL_IDS=skill_id_1,skill_id_2
 MANUS_PROJECT_ID=proj_abc123   # optional, falls project.create genutzt wird
+
+# Erweitert (Skills-Spezifikation v2.0): individuelle IDs je Skill-Typ
+MANUS_SKILL_DOC_EXTRACTION=skill_xxxxxxx
+MANUS_SKILL_LEGAL_ANALYSIS=skill_xxxxxxx
+MANUS_SKILL_FINANCIAL_PROCESSING=skill_xxxxxxx
+MANUS_SKILL_WEB_SEARCH=skill_xxxxxxx
+MANUS_SKILL_IMAGE_ANALYSIS=skill_xxxxxxx
+MANUS_SKILL_DATA_ANALYSIS=skill_xxxxxxx
+MANUS_SKILL_OCR_HANDWRITING=skill_xxxxxxx
+MANUS_SKILL_FILE_CLASSIFICATION=skill_xxxxxxx
 ```
 
 ---
@@ -412,56 +423,116 @@ MANUS_PROJECT_ID=proj_abc123
 ### Schritt 2: Manus API Client (`src/manus_client.py`)
 
 ```python
-import os, time, requests
+import os
+import time
+
+import requests
 from dotenv import load_dotenv
+
 load_dotenv()
 
 MANUS_API_URL = "https://api.manus.ai/v2"
 
-def _headers():
-    return {"x-manus-api-key": os.getenv("MANUS_API_KEY"), "Content-Type": "application/json"}
+
+def _headers() -> dict:
+    api_key = os.getenv("MANUS_API_KEY")
+    if not api_key:
+        raise EnvironmentError("MANUS_API_KEY is not set.")
+    return {"x-manus-api-key": api_key, "Content-Type": "application/json"}
+
 
 def upload_file_to_manus(file_path: str, file_name: str) -> str:
-    res = requests.post(f"{MANUS_API_URL}/file.upload", headers=_headers(), json={"file_name": file_name})
+    res = requests.post(
+        f"{MANUS_API_URL}/file.upload",
+        headers=_headers(),
+        json={"file_name": file_name},
+        timeout=30,
+    )
     res.raise_for_status()
     data = res.json()
     with open(file_path, "rb") as f:
-        requests.put(data["upload_url"], data=f).raise_for_status()
+        requests.put(data["upload_url"], data=f, timeout=120).raise_for_status()
     return data["file"]["id"]
+
 
 def create_analysis_task(file_ids: list, schema: dict) -> str:
     skill_ids = [s for s in os.getenv("MANUS_FORCE_SKILL_IDS", "").split(",") if s]
     project_id = os.getenv("MANUS_PROJECT_ID")
-    prompt = """Du bist ein hochspezialisierter Immobilien-Due-Diligence-Experte fuer den deutschsprachigen Markt.
-Analysiere alle angehaengten Maklerunterlagen auf rechtliche, wirtschaftliche und technische Risiken.
-Berechne Kennzahlen, bewerte Risiken je Kategorie, und vergib einen Investment-Score.
-Wenn Informationen fehlen, erfinde nichts und liste sie als offene Punkte.
-Liefere deine Analyse exakt im geforderten JSON-Format."""
-    message = {"content": prompt, "attachments": [{"file_id": fid} for fid in file_ids]}
+    prompt = (
+        "Du bist ein hochspezialisierter Immobilien-Due-Diligence-Experte fuer den deutschsprachigen Markt.\n"
+        "Analysiere alle angehaengten Maklerunterlagen auf rechtliche, wirtschaftliche und technische Risiken.\n"
+        "Berechne Kennzahlen, bewerte Risiken je Kategorie, und vergib einen Investment-Score.\n"
+        "Wenn Informationen fehlen, erfinde nichts und liste sie als offene Punkte.\n"
+        "Liefere deine Analyse exakt im geforderten JSON-Format."
+    )
+    message: dict = {
+        "content": prompt,
+        "attachments": [{"file_id": fid} for fid in file_ids],
+    }
     if skill_ids:
         message["force_skills"] = skill_ids
-    payload = {"message": message, "structured_output_schema": schema}
+    payload: dict = {"message": message, "structured_output_schema": schema}
     if project_id:
         payload["project_id"] = project_id
-    res = requests.post(f"{MANUS_API_URL}/task.create", headers=_headers(), json=payload)
+    res = requests.post(
+        f"{MANUS_API_URL}/task.create",
+        headers=_headers(),
+        json=payload,
+        timeout=30,
+    )
     res.raise_for_status()
     return res.json()["task"]["id"]
 
-def poll_for_result(task_id: str, timeout: int = 300) -> dict:
+
+def send_followup_message(task_id: str, content: str) -> None:
+    """Setzt einen bestehenden Task mit einer Nachfrage fort (ohne structured output)."""
+    res = requests.post(
+        f"{MANUS_API_URL}/task.sendMessage",
+        headers=_headers(),
+        json={"task_id": task_id, "message": {"content": content}},
+        timeout=30,
+    )
+    res.raise_for_status()
+
+
+def poll_for_result(task_id: str, timeout: int = 600) -> dict:
     start = time.time()
     while time.time() - start < timeout:
-        events = requests.get(
-            f"{MANUS_API_URL}/task.listMessages?task_id={task_id}&order=desc&limit=20",
-            headers=_headers()).json().get("data", [])
+        res = requests.get(
+            f"{MANUS_API_URL}/task.listMessages",
+            headers=_headers(),
+            params={"task_id": task_id, "order": "desc", "limit": 20},
+            timeout=30,
+        )
+        res.raise_for_status()
+        events = res.json().get("data", [])
         for e in events:
             if e.get("type") == "structured_output_result":
                 r = e["structured_output_result"]
-                if r.get("success"): return r["value"]
-                raise Exception(f"Schema-Fehler: {r.get('error')}")
-            if e.get("type") == "status_update" and e.get("status_update", {}).get("status") == "error":
-                raise Exception("Manus Task fehlgeschlagen.")
+                if r.get("success"):
+                    return r["value"]
+                raise RuntimeError(f"Schema-Fehler: {r.get('error')}")
+            if (
+                e.get("type") == "status_update"
+                and e.get("status_update", {}).get("status") == "error"
+            ):
+                raise RuntimeError("Manus Task fehlgeschlagen.")
         time.sleep(5)
     raise TimeoutError(f"Task {task_id} Timeout nach {timeout}s.")
+
+
+def get_available_skills(project_id: str | None = None) -> list:
+    params: dict = {}
+    if project_id:
+        params["project_id"] = project_id
+    res = requests.get(
+        f"{MANUS_API_URL}/skill.list",
+        headers=_headers(),
+        params=params or None,
+        timeout=30,
+    )
+    res.raise_for_status()
+    return res.json().get("data", [])
 ```
 
 ### Schritt 3: PDF-Generator (`src/pdf_generator.py`)
@@ -484,76 +555,170 @@ def generate_pdf(json_data: dict, output_path: str) -> str:
 ### Schritt 4: Chainlit App (`src/app.py`)
 
 ```python
-import os, uuid, asyncio
+import asyncio
+import uuid
+from pathlib import Path
+
 import chainlit as cl
 from dotenv import load_dotenv
-from src.manus_client import upload_file_to_manus, create_analysis_task, poll_for_result
-from src.schema import DUE_DILIGENCE_SCHEMA
+
+from src.manus_client import (
+    create_analysis_task,
+    poll_for_result,
+    send_followup_message,
+    upload_file_to_manus,
+)
 from src.pdf_generator import generate_pdf
+from src.schema import DUE_DILIGENCE_SCHEMA
+
 load_dotenv()
 
+REPORTS_DIR = Path(__file__).parent.parent / "reports"
+REPORTS_DIR.mkdir(exist_ok=True)
+
+TRIGGER_WORDS = {"analyse", "analysieren", "bericht", "start", "auswerten"}
+
+
 @cl.on_chat_start
-async def start():
+async def start() -> None:
     cl.user_session.set("file_ids", [])
     cl.user_session.set("file_names", [])
-    await cl.Message(content=(
-        "## Willkommen bei der Immobilien Due Diligence KI\n\n"
-        "1. Lade deine Dokumente hoch (Grundbuch, Mietverträge, Gutachten…)\n"
-        "2. Tippe `analyse` für den vollständigen Bericht\n"
-        "3. Du erhältst einen PDF-Bericht zum Download"
-    )).send()
+    cl.user_session.set("task_id", None)
+    await cl.Message(
+        content=(
+            "## Willkommen bei der Immobilien Due Diligence KI\n\n"
+            "1. Lade deine Maklerunterlagen hoch (Exposé, Grundbuch, Mietverträge, Gutachten …)\n"
+            "2. Tippe `analyse` für den vollständigen Bericht\n"
+            "3. Nach der Analyse kannst du Rückfragen stellen\n"
+            "4. Du erhältst einen PDF-Bericht zum Download"
+        )
+    ).send()
+
 
 @cl.on_message
-async def main(message: cl.Message):
-    file_ids = cl.user_session.get("file_ids", [])
-    file_names = cl.user_session.get("file_names", [])
+async def main(message: cl.Message) -> None:
+    file_ids: list = cl.user_session.get("file_ids", [])
+    file_names: list = cl.user_session.get("file_names", [])
+    task_id: str | None = cl.user_session.get("task_id")
 
+    # --- Datei-Upload ---
     if message.elements:
         for el in message.elements:
-            if hasattr(el, 'path') and el.path:
-                msg = cl.Message(content=f"Lade `{el.name}` hoch...")
-                await msg.send()
+            if hasattr(el, "path") and el.path:
+                msg = await cl.Message(content=f"Lade `{el.name}` hoch …").send()
                 try:
                     fid = upload_file_to_manus(el.path, el.name)
-                    file_ids.append(fid); file_names.append(el.name)
+                    file_ids.append(fid)
+                    file_names.append(el.name)
                     cl.user_session.set("file_ids", file_ids)
                     cl.user_session.set("file_names", file_names)
-                    msg.content = f"✅ `{el.name}` hochgeladen."
+                    msg.content = f"✅ `{el.name}` hochgeladen ({len(file_ids)} Dokument(e) gesamt)."
                     await msg.update()
-                except Exception as e:
-                    msg.content = f"❌ Fehler: {e}"; await msg.update()
+                except Exception as exc:
+                    msg.content = f"❌ Upload fehlgeschlagen: {exc}"
+                    await msg.update()
         return
 
-    if message.content.lower().strip() in ["analyse", "analysieren", "bericht", "start"]:
+    # --- Analyse starten ---
+    if message.content.lower().strip() in TRIGGER_WORDS:
         if not file_ids:
-            await cl.Message(content="Bitte zuerst Dokumente hochladen.").send(); return
-        msg = cl.Message(content=f"Starte Analyse für {len(file_ids)} Dokument(e)…")
-        await msg.send()
+            await cl.Message(content="Bitte zuerst Dokumente hochladen.").send()
+            return
+
+        msg = await cl.Message(
+            content=f"Starte Analyse für {len(file_ids)} Dokument(e) …"
+        ).send()
         try:
-            task_id = create_analysis_task(file_ids, DUE_DILIGENCE_SCHEMA)
-            msg.content = "🔍 KI analysiert Dokumente…"; await msg.update()
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, poll_for_result, task_id)
-            msg.content = "📄 Erstelle PDF-Bericht…"; await msg.update()
-            pdf = f"../reports/report_{uuid.uuid4().hex[:8]}.pdf"
-            generate_pdf(result, pdf)
+            new_task_id = create_analysis_task(file_ids, DUE_DILIGENCE_SCHEMA)
+            cl.user_session.set("task_id", new_task_id)
+            msg.content = "🔍 KI analysiert Dokumente …"
+            await msg.update()
+
+            result: dict = await asyncio.get_event_loop().run_in_executor(
+                None, poll_for_result, new_task_id
+            )
+
+            msg.content = "📄 Erstelle PDF-Bericht …"
+            await msg.update()
+
+            pdf_path = str(REPORTS_DIR / f"report_{uuid.uuid4().hex[:8]}.pdf")
+            generate_pdf(result, pdf_path)
+
             flags = result.get("red_flags", [])
             high = [f for f in flags if f["severity"] in ["High", "Critical"]]
+            score_obj = result.get("investment_score", {})
+
             await cl.Message(
-                content=(f"## ✅ Analyse abgeschlossen\n\n"
-                         f"**Objekt:** {result.get('property_address', '–')}\n"
-                         f"**Gesamtrisiko:** {result.get('overall_risk_level', '–')}\n"
-                         f"**Investment-Score:** {result.get('investment_score', {}).get('score', '–')}\n"
-                         f"**Red Flags:** {len(flags)} ({len(high)} kritisch)\n\n"
-                         f"_{result.get('executive_summary', '')}_"),
-                elements=[cl.File(name="Due_Diligence_Bericht.pdf", path=pdf, display="inline")]
+                content=(
+                    "## ✅ Analyse abgeschlossen\n\n"
+                    f"**Objekt:** {result.get('property_address') or '–'}\n"
+                    f"**Gesamtrisiko:** {result.get('overall_risk_level', '–')}\n"
+                    f"**Investment-Score:** {score_obj.get('score', '–')} — "
+                    f"{score_obj.get('classification', '–')}\n"
+                    f"**Empfehlung:** {result.get('recommendation', '–')}\n"
+                    f"**Red Flags:** {len(flags)} ({len(high)} kritisch)\n\n"
+                    f"_{result.get('executive_summary', '')}_\n\n"
+                    "Stelle gerne Rückfragen zu einzelnen Punkten."
+                ),
+                elements=[
+                    cl.File(
+                        name="Due_Diligence_Bericht.pdf",
+                        path=pdf_path,
+                        display="inline",
+                    )
+                ],
             ).send()
-        except Exception as e:
-            await cl.Message(content=f"❌ Fehler: {e}").send()
+
+        except Exception as exc:
+            await cl.Message(content=f"❌ Fehler bei der Analyse: {exc}").send()
         return
 
-    await cl.Message(content="Lade Dokumente hoch und tippe `analyse` für den Bericht.").send()
+    # --- Nachfragen nach abgeschlossener Analyse ---
+    if task_id:
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None, send_followup_message, task_id, message.content
+            )
+            import requests as _req
+            from src.manus_client import _headers
+            events_res = _req.get(
+                "https://api.manus.ai/v2/task.listMessages",
+                headers=_headers(),
+                params={"task_id": task_id, "order": "desc", "limit": 5},
+                timeout=30,
+            )
+            events_res.raise_for_status()
+            for e in events_res.json().get("data", []):
+                if e.get("type") == "assistant_message":
+                    await cl.Message(content=e.get("content", "")).send()
+                    return
+        except Exception as exc:
+            await cl.Message(content=f"❌ Fehler: {exc}").send()
+        return
+
+    await cl.Message(
+        content="Lade Dokumente hoch und tippe `analyse` für den Bericht."
+    ).send()
 ```
+
+### Schritt 4b: Multi-Turn-Interaktion (Nachfragen nach der Analyse)
+
+Wenn der Nutzer nach der generierten Analyse Nachfragen stellt (z.B. *"Erkläre mir das Wegerecht im Detail"*), wird der bestehende Task über `POST /v2/task.sendMessage` fortgesetzt. Die Due-Diligence-Persona und der vollständige Analysekontext bleiben über die `project_id` aktiv.
+
+Für Chat-Nachfragen wird **kein** `structured_output_schema` mitgeschickt. Die Antwort kommt als Markdown-Text und wird direkt im Chainlit-Frontend angezeigt. Die `task_id` des Analyse-Tasks wird in der Nutzersession gespeichert (`cl.user_session.set("task_id", ...)`) und für alle Folgenachrichten genutzt.
+
+**Empfohlene Follow-up-Themen:**
+
+| Nutzerfrage | Relevanter Kontext |
+| :--- | :--- |
+| „Erkläre das Nießbrauchrecht im Grundbuch" | Grundbuch-Analyse |
+| „Welche Mieterhöhung ist realistisch?" | Mietanalyse, Standort |
+| „Berechne die Rendite bei 10% Rabatt auf Kaufpreis" | Finanzkennzahlen |
+| „Was müsste ich vor dem Kauf sanieren?" | Technische Prüfung, WEG |
+| „Welche Klauseln im Kaufvertrag sind gefährlich?" | Rechtliche Risikoprüfung |
+| „Was bedeutet der Investment-Score?" | Risikobewertung & Score |
+
+---
 
 ### Schritt 5: Starten
 
@@ -627,7 +792,7 @@ Das MVP ist für ~50 Nutzer auf einem einzelnen Server ausgelegt. Für Wachstum 
 | Fehler | Ursache | Lösung |
 | :--- | :--- | :--- |
 | `QuotaExceededError` beim Upload | 10 GB Speicherlimit überschritten | Alte Tasks löschen, Add-on Credits kaufen |
-| `TimeoutError` beim Polling | Task dauert >5 Min. | `timeout`-Parameter in `poll_for_result` erhöhen |
+| `TimeoutError` beim Polling | Task dauert >10 Min. | `timeout`-Parameter in `poll_for_result` erhöhen (Standard: 600s) |
 | Leeres `structured_output_result` | Schema-Validierungsfehler | Alle Felder in `required` listen, `additionalProperties: false` setzen |
 | WeasyPrint-Fehler beim PDF | Fehlende Systemabhängigkeiten | `apt-get install libpango-1.0-0 libcairo2` |
 | Chainlit startet nicht | Port 8000 belegt | `chainlit run app.py --port 8001` |
