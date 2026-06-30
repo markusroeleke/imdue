@@ -43,18 +43,11 @@ def _headers() -> dict:
 def upload_file_to_manus(file_path: str, file_name: str) -> str:
     # Use only the basename — no path separators that could cause a 400
     safe_name = Path(file_name).name or Path(file_path).name
-    mime_type, _ = mimetypes.guess_type(safe_name)
-    mime_type = mime_type or "application/octet-stream"
-    project_id = os.getenv("MANUS_PROJECT_ID")
-
-    payload: dict = {"filename": safe_name, "mime_type": mime_type}
-    if project_id:
-        payload["project_id"] = project_id
-
+    # API spec only accepts "filename" — no mime_type, no project_id
     res = requests.post(
         f"{MANUS_API_URL}/file.upload",
         headers=_headers(),
-        json=payload,
+        json={"filename": safe_name},
         timeout=30,
         verify=_ssl_verify(),
     )
@@ -63,9 +56,14 @@ def upload_file_to_manus(file_path: str, file_name: str) -> str:
             f"file.upload fehlgeschlagen ({res.status_code}): {res.text}"
         )
     data = res.json()
+    upload_url = data.get("upload_url")
+    if not upload_url:
+        raise RuntimeError(f"file.upload lieferte keine upload_url: {data}")
+    mime_type, _ = mimetypes.guess_type(safe_name)
+    mime_type = mime_type or "application/octet-stream"
     with open(file_path, "rb") as f:
         put_res = requests.put(
-            data["upload_url"],
+            upload_url,
             data=f,
             headers={"Content-Type": mime_type},
             timeout=120,
@@ -126,11 +124,14 @@ def send_followup_message(task_id: str, content: str) -> None:
     res.raise_for_status()
 
 
-def poll_for_followup_reply(task_id: str) -> str:
+def poll_for_followup_reply(task_id: str, retries: int = 6, delay: int = 5) -> str:
     """Return the latest assistant_message text for a follow-up turn."""
-    for event in list_task_messages(task_id, limit=5):
-        if event.get("type") == "assistant_message":
-            return event.get("content", "")
+    for _ in range(retries):
+        for event in list_task_messages(task_id, limit=10):
+            if event.get("type") == "assistant_message":
+                # content is nested: event.assistant_message.content
+                return event.get("assistant_message", {}).get("content", "")
+        time.sleep(delay)
     return ""
 
 
@@ -144,9 +145,10 @@ def poll_for_result(task_id: str, timeout: int = 600) -> dict:
                 return result
             if (
                 e.get("type") == "status_update"
-                and e.get("status_update", {}).get("status") == "error"
+                and e.get("status_update", {}).get("agent_status") == "error"
             ):
-                raise RuntimeError("Manus Task fehlgeschlagen.")
+                err_detail = e.get("status_update", {}).get("description", "")
+                raise RuntimeError(f"Manus Task fehlgeschlagen: {err_detail}")
         time.sleep(5)
     raise TimeoutError(f"Task {task_id} Timeout nach {timeout}s.")
 
@@ -176,7 +178,9 @@ def list_task_messages(task_id: str, limit: int = 20, order: str = "desc") -> li
         verify=_ssl_verify(),
     )
     res.raise_for_status()
-    return res.json().get("data", [])
+    # API returns key "messages", not "data"
+    body = res.json()
+    return body.get("messages") or body.get("data") or []
 
 
 def _extract_structured_output(event: dict) -> dict | None:

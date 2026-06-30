@@ -59,20 +59,16 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
     loop = asyncio.get_running_loop()
 
     def format_status(event: dict) -> str:
+        # API spec fields: agent_status, brief, description
         status_info = event.get("status_update", {}) or {}
+        brief = status_info.get("brief") or status_info.get("description", "")
+        agent_status = status_info.get("agent_status", "")
         parts: list[str] = []
-        label = status_info.get("label")
-        if label:
-            parts.append(label)
-        status = status_info.get("status")
-        if status:
-            parts.append(status.capitalize())
-        progress = status_info.get("progress")
-        if isinstance(progress, (int, float)):
-            parts.append(f"{int(progress)}%")
-        elif progress:
-            parts.append(str(progress))
-        return " – ".join(parts) if parts else "Status-Update"
+        if brief:
+            parts.append(brief)
+        elif agent_status:
+            parts.append(agent_status.capitalize())
+        return parts[0] if parts else "Status-Update"
 
     try:
         while True:
