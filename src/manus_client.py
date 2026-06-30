@@ -132,13 +132,11 @@ def poll_for_followup_reply(task_id: str) -> str:
 def poll_for_result(task_id: str, timeout: int = 600) -> dict:
     start = time.time()
     while time.time() - start < timeout:
-        events = list_task_messages(task_id, limit=20)
+        events = list_task_messages(task_id, limit=50)
         for e in events:
-            if e.get("type") == "structured_output_result":
-                r = e["structured_output_result"]
-                if r.get("success"):
-                    return r["value"]
-                raise RuntimeError(f"Schema-Fehler: {r.get('error')}")
+            result = _extract_structured_output(e)
+            if result is not None:
+                return result
             if (
                 e.get("type") == "status_update"
                 and e.get("status_update", {}).get("status") == "error"
@@ -163,14 +161,57 @@ def get_available_skills(project_id: str | None = None) -> list:
     return res.json().get("data", [])
 
 
-def list_task_messages(task_id: str, limit: int = 20) -> list:
+def list_task_messages(task_id: str, limit: int = 20, order: str = "desc") -> list:
     """Return latest Manus task events (status updates, results, etc.)."""
     res = requests.get(
         f"{MANUS_API_URL}/task.listMessages",
         headers=_headers(),
-        params={"task_id": task_id, "order": "desc", "limit": limit},
+        params={"task_id": task_id, "order": order, "limit": limit},
         timeout=30,
         verify=_ssl_verify(),
     )
     res.raise_for_status()
     return res.json().get("data", [])
+
+
+def _extract_structured_output(event: dict) -> dict | None:
+    """Return schema value from any Manus structured output variant if present."""
+    payload_candidates = []
+    if event.get("type") == "structured_output_result":
+        payload_candidates.append(event.get("structured_output_result"))
+    payload_candidates.extend(
+        filter(
+            None,
+            (
+                event.get("structured_output_result"),
+                event.get("structured_output"),
+                (
+                    (event.get("data") or {}).get("structured_output_result")
+                    if isinstance(event.get("data"), dict)
+                    else None
+                ),
+            ),
+        )
+    )
+
+    for payload in payload_candidates:
+        if payload is None:
+            continue
+        if not isinstance(payload, dict):
+            return payload
+        if payload.get("success") is False:
+            raise RuntimeError(f"Schema-Fehler: {payload.get('error')}")
+        if "value" in payload:
+            return payload["value"]
+        if "result" in payload:
+            return payload["result"]
+        data = payload.get("data")
+        if isinstance(data, dict):
+            if "value" in data:
+                return data["value"]
+            return data
+        # Fallback: treat dict itself as result if it already looks like schema output
+        keys = {k for k in payload.keys() if k not in {"success", "error", "schema_id"}}
+        if keys:
+            return {k: payload[k] for k in keys}
+    return None
