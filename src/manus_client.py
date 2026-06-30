@@ -100,7 +100,13 @@ def create_analysis_task(file_ids: list, schema: dict) -> str:
         verify=_ssl_verify(),
     )
     res.raise_for_status()
-    return res.json()["task"]["id"]
+    data = res.json()
+    task = data.get("task") or data.get("data", {}).get("task")
+    if isinstance(task, dict) and "id" in task:
+        return task["id"]
+    if "task_id" in data:
+        return data["task_id"]
+    raise RuntimeError(f"task.create Antwort enthaelt keine task_id: {data}")
 
 
 def send_followup_message(task_id: str, content: str) -> None:
