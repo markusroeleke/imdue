@@ -1,14 +1,36 @@
 import mimetypes
 import os
 import time
+import warnings
 from pathlib import Path
 
 import requests
+import urllib3
 from dotenv import load_dotenv
 
 load_dotenv()
 
 MANUS_API_URL = "https://api.manus.ai/v2"
+
+
+def _ssl_verify() -> bool | str:
+    """Return the requests `verify=` value from env.
+
+    SSL_CA_BUNDLE=/path/to/corp-ca.crt  – use a custom CA bundle (recommended)
+    SSL_VERIFY=false                     – disable verification entirely (last resort)
+    """
+    bundle = os.getenv("SSL_CA_BUNDLE", "").strip()
+    if bundle:
+        return bundle
+    if os.getenv("SSL_VERIFY", "true").lower() in ("false", "0", "no"):
+        warnings.warn(
+            "SSL verification is disabled (SSL_VERIFY=false). "
+            "Only use this in trusted corporate networks.",
+            stacklevel=2,
+        )
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        return False
+    return True
 
 
 def _headers() -> dict:
@@ -29,6 +51,7 @@ def upload_file_to_manus(file_path: str, file_name: str) -> str:
         headers=_headers(),
         json={"filename": safe_name, "mime_type": mime_type},
         timeout=30,
+        verify=_ssl_verify(),
     )
     if not res.ok:
         raise RuntimeError(
@@ -41,6 +64,7 @@ def upload_file_to_manus(file_path: str, file_name: str) -> str:
             data=f,
             headers={"Content-Type": mime_type},
             timeout=120,
+            verify=_ssl_verify(),
         )
         if not put_res.ok:
             raise RuntimeError(
@@ -73,6 +97,7 @@ def create_analysis_task(file_ids: list, schema: dict) -> str:
         headers=_headers(),
         json=payload,
         timeout=30,
+        verify=_ssl_verify(),
     )
     res.raise_for_status()
     return res.json()["task"]["id"]
@@ -85,6 +110,7 @@ def send_followup_message(task_id: str, content: str) -> None:
         headers=_headers(),
         json={"task_id": task_id, "message": {"content": content}},
         timeout=30,
+        verify=_ssl_verify(),
     )
     res.raise_for_status()
 
@@ -96,6 +122,7 @@ def poll_for_followup_reply(task_id: str) -> str:
         headers=_headers(),
         params={"task_id": task_id, "order": "desc", "limit": 5},
         timeout=30,
+        verify=_ssl_verify(),
     )
     res.raise_for_status()
     for event in res.json().get("data", []):
@@ -112,6 +139,7 @@ def poll_for_result(task_id: str, timeout: int = 600) -> dict:
             headers=_headers(),
             params={"task_id": task_id, "order": "desc", "limit": 20},
             timeout=30,
+            verify=_ssl_verify(),
         )
         res.raise_for_status()
         events = res.json().get("data", [])
@@ -139,6 +167,7 @@ def get_available_skills(project_id: str | None = None) -> list:
         headers=_headers(),
         params=params or None,
         timeout=30,
+        verify=_ssl_verify(),
     )
     res.raise_for_status()
     return res.json().get("data", [])
