@@ -45,11 +45,16 @@ def upload_file_to_manus(file_path: str, file_name: str) -> str:
     safe_name = Path(file_name).name or Path(file_path).name
     mime_type, _ = mimetypes.guess_type(safe_name)
     mime_type = mime_type or "application/octet-stream"
+    project_id = os.getenv("MANUS_PROJECT_ID")
+
+    payload: dict = {"filename": safe_name, "mime_type": mime_type}
+    if project_id:
+        payload["project_id"] = project_id
 
     res = requests.post(
         f"{MANUS_API_URL}/file.upload",
         headers=_headers(),
-        json={"filename": safe_name, "mime_type": mime_type},
+        json=payload,
         timeout=30,
         verify=_ssl_verify(),
     )
