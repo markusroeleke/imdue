@@ -30,7 +30,14 @@ REPORTS_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-TRIGGER_WORDS = {"analyse", "analysieren", "bericht", "start", "auswerten"}
+TRIGGER_WORDS = {
+    "analyse",
+    "analysieren",
+    "analysiere",
+    "bericht",
+    "start",
+    "auswerten",
+}
 
 
 def _persist_upload(temp_path: str, original_name: str | None) -> dict:
@@ -60,6 +67,9 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
 
     def format_status(event: dict) -> str:
         # API spec fields: agent_status, brief, description
+        import pprint
+
+        pprint.pprint(event)
         status_info = event.get("status_update", {}) or {}
         brief = status_info.get("brief") or status_info.get("description", "")
         agent_status = status_info.get("agent_status", "")
@@ -68,6 +78,8 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
             parts.append(brief)
         elif agent_status:
             parts.append(agent_status.capitalize())
+        # replace manus if found in event
+        parts = [p.replace("Manus", "Analysis") for p in parts]
         return parts[0] if parts else "Status-Update"
 
     try:
@@ -81,12 +93,12 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
                 if event.get("type") == "status_update":
                     steps.append(format_status(event))
             idx = (idx + 1) % len(spinner)
-            base = f"{spinner[idx]} KI analysiert Dokumente …"
+            base = f"{spinner[idx]} analysiere Dokumente …"
             if steps:
                 recent = "\n".join(f"- {line}" for line in steps[-5:])
                 status_msg.content = f"{base}\n{recent}"
             else:
-                status_msg.content = f"{base}\n- KI arbeitet weiter …"
+                status_msg.content = f"{base}\n- arbeitee weiter …"
             await status_msg.update()
             await asyncio.sleep(4)
     except asyncio.CancelledError:
@@ -101,7 +113,7 @@ async def start() -> None:
         content=(
             "## Willkommen bei der Immobilien Due Diligence KI\n\n"
             "1. Lade deine Maklerunterlagen hoch (Exposé, Grundbuch, Mietverträge, Gutachten …)\n"
-            "2. Tippe `analyse` für den vollständigen Bericht\n"
+            "2. Tippe `analysiere` für den vollständigen Bericht\n"
             "3. Nach der Analyse kannst du Rückfragen stellen\n"
             "4. Du erhältst einen Bericht zum Download"
         )
@@ -143,14 +155,14 @@ async def main(message: cl.Message) -> None:
             file_ids: list[str] = []
             total = len(pending_files)
             for idx, info in enumerate(pending_files, start=1):
-                msg.content = f"⬆️ Lade Dokument {idx}/{total} zu Manus …"
+                msg.content = f"⬆️ Lade Dokument {idx}/{total} zur Analyse …"
                 await msg.update()
                 fid = await loop.run_in_executor(
                     None, upload_file_to_manus, info["path"], info["name"]
                 )
                 file_ids.append(fid)
 
-            msg.content = "🔍 KI analysiert Dokumente …"
+            msg.content = "🔍 Analysiere Dokumente …"
             await msg.update()
 
             new_task_id = await loop.run_in_executor(
