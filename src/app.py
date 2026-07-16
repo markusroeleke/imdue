@@ -15,8 +15,10 @@ import chainlit as cl
 from dotenv import load_dotenv
 
 from src.manus_client import (
+    SKILL_STEPS,
     create_analysis_task,
     list_task_messages,
+    match_skill,
     poll_for_followup_reply,
     poll_for_result,
     send_followup_message,
@@ -52,84 +54,6 @@ def _sanitize_backend_text(text: str) -> str:
     text = _URL_PATTERN.sub("", text)
     text = _BACKEND_NAME_PATTERN.sub("Analyse-System", text)
     return text
-
-
-# The 10 Due-Diligence skills executed by the backend for each analysis
-# (see .github/skills/dd-skill-01 … dd-skill-10). Used to derive a per-skill
-# progress checklist from the free-text status/plan/tool events the backend
-# reports, since there is no dedicated "skill status" event.
-SKILL_STEPS: list[tuple[str, str, tuple[str, ...]]] = [
-    (
-        "dd-skill-01-document-inventory",
-        "Dokument-Inventarisierung",
-        ("dokument-inventar", "vollständigkeitsprüfung", "skill-01"),
-    ),
-    (
-        "dd-skill-02-grundbuch",
-        "Grundbuch- & Eigentumsanalyse",
-        ("grundbuch", "eigentumsstruktur", "grundschuld", "skill-02"),
-    ),
-    (
-        "dd-skill-03-mietanalyse",
-        "Mietvertrags- & Mieteranalyse",
-        ("mietvertrag", "mieteranalyse", "mietanalyse", "skill-03"),
-    ),
-    (
-        "dd-skill-04-finanzkennzahlen",
-        "Wirtschaftliche Kennzahlen",
-        ("finanzkennzahl", "kaufpreisfaktor", "mietrendite", "skill-04"),
-    ),
-    (
-        "dd-skill-05-technisch",
-        "Technische & bauliche Prüfung",
-        ("technische prüfung", "energieausweis", "instandhaltungsrückstau", "skill-05"),
-    ),
-    (
-        "dd-skill-06-weg",
-        "WEG-Analyse",
-        (
-            "weg-analyse",
-            "hausgeld",
-            "wohnungseigentümergemeinschaft",
-            "sonderumlage",
-            "skill-06",
-        ),
-    ),
-    (
-        "dd-skill-07-standort",
-        "Standort- & Marktanalyse",
-        ("standortanalyse", "makrolage", "mikrolage", "milieuschutz", "skill-07"),
-    ),
-    (
-        "dd-skill-08-rechtlich",
-        "Rechtliche Risikoprüfung",
-        (
-            "rechtliche risikoprüfung",
-            "kaufvertragsentwurf",
-            "mietpreisbremse",
-            "skill-08",
-        ),
-    ),
-    (
-        "dd-skill-09-risikoscore",
-        "Risikobewertung & Investment-Score",
-        ("risikoscore", "investment-score", "red flags", "skill-09"),
-    ),
-    (
-        "dd-skill-10-orchestrator",
-        "Gesamt-Workflow & Berichtserstellung",
-        ("orchestrator", "gesamt-workflow", "gesamtbericht", "skill-10"),
-    ),
-]
-
-
-def _match_skill(text: str) -> str | None:
-    """Return the skill id whose name/keywords occur in `text`, if any."""
-    text_lower = text.lower()
-    for skill_id, _, keywords in SKILL_STEPS:
-        if skill_id.lower() in text_lower or any(kw in text_lower for kw in keywords):
-            return skill_id
-    return None
 
 
 BASE_DIR = Path(__file__).parent.parent
@@ -194,7 +118,7 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
         etype = event.get("type")
         if etype == "plan_update":
             for step in (event.get("plan_update", {}) or {}).get("steps", []) or []:
-                skill_id = _match_skill(step.get("title", ""))
+                skill_id = match_skill(step.get("title", ""))
                 if not skill_id:
                     continue
                 step_status = step.get("status")
@@ -205,7 +129,7 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
         elif etype == "tool_used":
             tool_info = event.get("tool_used", {}) or {}
             text = f"{tool_info.get('brief', '')} {tool_info.get('description', '')}"
-            skill_id = _match_skill(text)
+            skill_id = match_skill(text)
             if skill_id and skill_status[skill_id] != "done":
                 skill_status[skill_id] = "running"
         elif etype == "status_update":
@@ -213,7 +137,7 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
             text = (
                 f"{status_info.get('brief', '')} {status_info.get('description', '')}"
             )
-            skill_id = _match_skill(text)
+            skill_id = match_skill(text)
             if skill_id and skill_status[skill_id] != "done":
                 skill_status[skill_id] = "running"
 

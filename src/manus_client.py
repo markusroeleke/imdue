@@ -137,27 +137,131 @@ def poll_for_followup_reply(task_id: str, retries: int = 6, delay: int = 5) -> s
     return ""
 
 
+# The 10 Due-Diligence skills executed by the backend for each analysis
+# (see .github/skills/dd-skill-01 … dd-skill-10). Used to detect which
+# processing step is currently active from the free-text status/plan/tool
+# events the backend reports, since there is no dedicated "skill status"
+# event. Shared between the per-step polling timeout below and the app's
+# skill-progress checklist shown to the user.
+SKILL_STEPS: list[tuple[str, str, tuple[str, ...]]] = [
+    (
+        "dd-skill-01-document-inventory",
+        "Dokument-Inventarisierung",
+        ("dokument-inventar", "vollständigkeitsprüfung", "skill-01"),
+    ),
+    (
+        "dd-skill-02-grundbuch",
+        "Grundbuch- & Eigentumsanalyse",
+        ("grundbuch", "eigentumsstruktur", "grundschuld", "skill-02"),
+    ),
+    (
+        "dd-skill-03-mietanalyse",
+        "Mietvertrags- & Mieteranalyse",
+        ("mietvertrag", "mieteranalyse", "mietanalyse", "skill-03"),
+    ),
+    (
+        "dd-skill-04-finanzkennzahlen",
+        "Wirtschaftliche Kennzahlen",
+        ("finanzkennzahl", "kaufpreisfaktor", "mietrendite", "skill-04"),
+    ),
+    (
+        "dd-skill-05-technisch",
+        "Technische & bauliche Prüfung",
+        ("technische prüfung", "energieausweis", "instandhaltungsrückstau", "skill-05"),
+    ),
+    (
+        "dd-skill-06-weg",
+        "WEG-Analyse",
+        (
+            "weg-analyse",
+            "hausgeld",
+            "wohnungseigentümergemeinschaft",
+            "sonderumlage",
+            "skill-06",
+        ),
+    ),
+    (
+        "dd-skill-07-standort",
+        "Standort- & Marktanalyse",
+        ("standortanalyse", "makrolage", "mikrolage", "milieuschutz", "skill-07"),
+    ),
+    (
+        "dd-skill-08-rechtlich",
+        "Rechtliche Risikoprüfung",
+        (
+            "rechtliche risikoprüfung",
+            "kaufvertragsentwurf",
+            "mietpreisbremse",
+            "skill-08",
+        ),
+    ),
+    (
+        "dd-skill-09-risikoscore",
+        "Risikobewertung & Investment-Score",
+        ("risikoscore", "investment-score", "red flags", "skill-09"),
+    ),
+    (
+        "dd-skill-10-orchestrator",
+        "Gesamt-Workflow & Berichtserstellung",
+        ("orchestrator", "gesamt-workflow", "gesamtbericht", "skill-10"),
+    ),
+]
+
+
+def match_skill(text: str) -> str | None:
+    """Return the skill id whose name/keywords occur in `text`, if any."""
+    text_lower = text.lower()
+    for skill_id, _, keywords in SKILL_STEPS:
+        if skill_id.lower() in text_lower or any(kw in text_lower for kw in keywords):
+            return skill_id
+    return None
+
+
+def _detect_step_progress(event: dict) -> tuple[str | None, bool]:
+    """Return (skill_id, is_done) an event can be attributed to, if any."""
+    etype = event.get("type")
+    if etype == "plan_update":
+        for step in (event.get("plan_update", {}) or {}).get("steps", []) or []:
+            skill_id = match_skill(step.get("title", ""))
+            if skill_id:
+                return skill_id, step.get("status") == "done"
+        return None, False
+    if etype == "tool_used":
+        tool_info = event.get("tool_used", {}) or {}
+        text = f"{tool_info.get('brief', '')} {tool_info.get('description', '')}"
+        return match_skill(text), False
+    if etype == "status_update":
+        status_info = event.get("status_update", {}) or {}
+        text = f"{status_info.get('brief', '')} {status_info.get('description', '')}"
+        return match_skill(text), False
+    return None, False
+
+
 def poll_for_result(task_id: str, timeout: int = 600) -> dict:
     """Poll task.listMessages until a structured result appears.
 
-    `timeout` is an inactivity timeout, not a total-duration timeout: it is
-    reset every time a new event (e.g. a status_update reporting progress)
-    is observed for the task. Long-running analyses (>10 min) that keep
-    reporting progress are therefore not cut off, while a genuinely stuck
-    task (no new events at all) still times out.
+    `timeout` applies per processing step (skill), not to the task as a
+    whole: whenever a backend event can be attributed to one of the 10 DD
+    skills (see SKILL_STEPS), that skill's own clock resets. A skill that
+    hasn't finished and shows no further event for `timeout` seconds is
+    considered stuck and raises TimeoutError. Since skills 2-8 run in
+    parallel and each gets its own budget, a long-running analysis (>10 min)
+    that keeps progressing through its skills is not cut off. Events that
+    cannot be attributed to a specific skill (e.g. before the first skill
+    starts) fall back to a plain inactivity timeout.
     """
     seen_ids: set[str] = set()
-    last_activity = time.time()
-    while time.time() - last_activity < timeout:
-        events = list_task_messages(task_id, limit=50)
-        new_event_seen = False
+    skill_last_seen: dict[str, float] = {}
+    skill_done: set[str] = set()
+    overall_last_activity = time.time()
+    while True:
+        events = list_task_messages(task_id, limit=50, verbose=True)
         for e in events:
             event_id = e.get("id")
             if event_id:
                 if event_id in seen_ids:
                     continue
                 seen_ids.add(event_id)
-            new_event_seen = True
             result = _extract_structured_output(e)
             if result is not None:
                 return result
@@ -167,10 +271,32 @@ def poll_for_result(task_id: str, timeout: int = 600) -> dict:
             ):
                 err_detail = e.get("status_update", {}).get("description", "")
                 raise RuntimeError(f"Manus Task fehlgeschlagen: {err_detail}")
-        if new_event_seen:
-            last_activity = time.time()
+            step_id, step_done = _detect_step_progress(e)
+            if step_id:
+                skill_last_seen[step_id] = time.time()
+                if step_done:
+                    skill_done.add(step_id)
+            else:
+                overall_last_activity = time.time()
+
+        now = time.time()
+        stalled_step = next(
+            (
+                sid
+                for sid, last_seen in skill_last_seen.items()
+                if sid not in skill_done and now - last_seen >= timeout
+            ),
+            None,
+        )
+        if stalled_step:
+            raise TimeoutError(
+                f"Task {task_id}: Schritt '{stalled_step}' ohne Fortschritt seit {timeout}s."
+            )
+        if not skill_last_seen and now - overall_last_activity >= timeout:
+            raise TimeoutError(
+                f"Task {task_id} Timeout nach {timeout}s ohne Aktivität."
+            )
         time.sleep(5)
-    raise TimeoutError(f"Task {task_id} Timeout nach {timeout}s ohne Aktivität.")
 
 
 def get_available_skills(project_id: str | None = None) -> list:
