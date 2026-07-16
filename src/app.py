@@ -150,7 +150,7 @@ async def main(message: cl.Message) -> None:
                 )
                 file_ids.append(fid)
 
-            msg.content = "🔍 KI analysiert Dokumente …"
+            msg.content = "🔍 Analysiere Dokumente …"
             await msg.update()
 
             new_task_id = await loop.run_in_executor(
