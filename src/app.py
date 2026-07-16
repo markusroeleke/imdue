@@ -168,11 +168,11 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
             if steps:
                 recent = "\n".join(f"- {line}" for line in steps[-5:])
                 status_msg.content = (
-                    f"{base}\n\n**Skill-Fortschritt:**\n{checklist}\n\n"
+                    f"{base}\n\n**Analyse-Fortschritt:**\n{checklist}\n\n"
                     f"**Letzte Updates:**\n{recent}"
                 )
             else:
-                status_msg.content = f"{base}\n\n**Skill-Fortschritt:**\n{checklist}"
+                status_msg.content = f"{base}\n\n**Analyse-Fortschritt:**\n{checklist}"
             await status_msg.update()
             await asyncio.sleep(4)
     except asyncio.CancelledError:
