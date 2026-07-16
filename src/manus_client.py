@@ -293,18 +293,18 @@ def poll_for_result(task_id: str, timeout: int = 600) -> dict:
     cannot be attributed to a specific skill (e.g. before the first skill
     starts) fall back to a plain inactivity timeout.
     """
-    seen_ids: set[str] = set()
     skill_last_seen: dict[str, float] = {}
     skill_done: set[str] = set()
     overall_last_activity = time.time()
     while True:
+        # Re-process every event returned on every poll (no id-based dedup):
+        # Manus reuses the same event id for a plan_update while mutating its
+        # `steps` statuses in place (a live snapshot, not a one-off delta), so
+        # skipping already-seen ids would freeze step progress at whatever
+        # state it had when first seen and could trigger false stalled-step
+        # timeouts even though the step is still actively progressing.
         events = list_task_messages(task_id, limit=50, verbose=True)
         for e in events:
-            event_id = e.get("id")
-            if event_id:
-                if event_id in seen_ids:
-                    continue
-                seen_ids.add(event_id)
             result = _extract_structured_output(e)
             if result is not None:
                 return result

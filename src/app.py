@@ -155,11 +155,17 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
                 None, functools.partial(list_task_messages, task_id, 30, verbose=True)
             )
             for event in reversed(events):
+                # Always re-apply skill/plan status from every event the API
+                # currently returns, even if its id was already seen: Manus
+                # reuses the same event id for a plan_update while mutating
+                # its `steps` statuses in place (a live snapshot, not a
+                # one-off delta), so skipping already-seen ids would freeze
+                # the checklist at whatever state it had when first seen.
+                update_skill_status(event)
                 event_id = event.get("id")
                 if not event_id or event_id in seen_ids:
                     continue
                 seen_ids.add(event_id)
-                update_skill_status(event)
                 if event.get("type") == "status_update":
                     steps.append(format_status(event))
             idx = (idx + 1) % len(spinner)
