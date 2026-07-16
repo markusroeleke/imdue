@@ -169,37 +169,46 @@ def poll_for_followup_reply(task_id: str, retries: int = 6, delay: int = 5) -> s
     return ""
 
 
-# The 10 Due-Diligence skills executed by the backend for each analysis
-# (see .github/skills/dd-skill-01 … dd-skill-10). Used to detect which
-# processing step is currently active from the free-text status/plan/tool
-# events the backend reports, since there is no dedicated "skill status"
-# event. Shared between the per-step polling timeout below and the app's
-# skill-progress checklist shown to the user.
+# The Due-Diligence steps executed by the backend within the single
+# consolidated analysis task (see the phase breakdown in the prompt built by
+# create_analysis_task: Phase 0 = doc inventory, Phase 1 (a)-(g) = the
+# parallel sub-analyses, Phase 2 = final risk score/recommendation
+# aggregation). Used to detect which processing step is currently active
+# from the free-text status/plan/tool events the backend reports, since
+# there is no dedicated "skill status" event. Keywords are kept in sync
+# with the wording used in that prompt so Manus's own plan/status text -
+# which tends to mirror the given instructions - matches reliably. Shared
+# between the per-step polling timeout below and the app's skill-progress
+# checklist shown to the user. Corresponds to skills 1-9 documented in
+# .github/skills/dd-skill-01 … dd-skill-09; skill 10 (orchestrator) is not
+# tracked separately since this task no longer runs a distinct
+# aggregation/report-generation call - the single task returns the final
+# JSON directly (see create_analysis_task's "JSON only, no PDF" instruction).
 SKILL_STEPS: list[tuple[str, str, tuple[str, ...]]] = [
     (
         "dd-skill-01-document-inventory",
         "Dokument-Inventarisierung",
-        ("dokument-inventar", "vollständigkeitsprüfung", "skill-01"),
+        ("dokument-inventar", "vollständigkeit", "phase 0", "skill-01"),
     ),
     (
         "dd-skill-02-grundbuch",
         "Grundbuch- & Eigentumsanalyse",
-        ("grundbuch", "eigentumsstruktur", "grundschuld", "skill-02"),
+        ("grundbuch", "eigentümerstruktur", "grundschuld", "nießbrauch", "skill-02"),
     ),
     (
         "dd-skill-03-mietanalyse",
         "Mietvertrags- & Mieteranalyse",
-        ("mietvertrag", "mieteranalyse", "mietanalyse", "skill-03"),
+        ("mietvertr", "mieteranalyse", "mietanalyse", "leerstandsrisiko", "skill-03"),
     ),
     (
         "dd-skill-04-finanzkennzahlen",
         "Wirtschaftliche Kennzahlen",
-        ("finanzkennzahl", "kaufpreisfaktor", "mietrendite", "skill-04"),
+        ("kaufpreisfaktor", "mietrendite", "cashflow", "finanzkennzahl", "skill-04"),
     ),
     (
         "dd-skill-05-technisch",
         "Technische & bauliche Prüfung",
-        ("technische prüfung", "energieausweis", "instandhaltungsrückstau", "skill-05"),
+        ("technische", "instandhaltungsrückstau", "energieausweis", "skill-05"),
     ),
     (
         "dd-skill-06-weg",
@@ -215,7 +224,7 @@ SKILL_STEPS: list[tuple[str, str, tuple[str, ...]]] = [
     (
         "dd-skill-07-standort",
         "Standort- & Marktanalyse",
-        ("standortanalyse", "makrolage", "mikrolage", "milieuschutz", "skill-07"),
+        ("standort", "makrolage", "mikrolage", "milieuschutz", "skill-07"),
     ),
     (
         "dd-skill-08-rechtlich",
@@ -229,13 +238,15 @@ SKILL_STEPS: list[tuple[str, str, tuple[str, ...]]] = [
     ),
     (
         "dd-skill-09-risikoscore",
-        "Risikobewertung & Investment-Score",
-        ("risikoscore", "investment-score", "red flags", "skill-09"),
-    ),
-    (
-        "dd-skill-10-orchestrator",
-        "Gesamt-Workflow & Berichtserstellung",
-        ("orchestrator", "gesamt-workflow", "gesamtbericht", "skill-10"),
+        "Risikobewertung, Investment-Score & Empfehlung",
+        (
+            "risikoscore",
+            "investment-score",
+            "red-flag",
+            "red flag",
+            "phase 2",
+            "skill-09",
+        ),
     ),
 ]
 
@@ -273,7 +284,7 @@ def poll_for_result(task_id: str, timeout: int = 600) -> dict:
     """Poll task.listMessages until a structured result appears.
 
     `timeout` applies per processing step (skill), not to the task as a
-    whole: whenever a backend event can be attributed to one of the 10 DD
+    whole: whenever a backend event can be attributed to one of the DD
     skills (see SKILL_STEPS), that skill's own clock resets. A skill that
     hasn't finished and shows no further event for `timeout` seconds is
     considered stuck and raises TimeoutError. Since skills 2-8 run in
