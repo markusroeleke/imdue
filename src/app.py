@@ -143,7 +143,7 @@ async def main(message: cl.Message) -> None:
             file_ids: list[str] = []
             total = len(pending_files)
             for idx, info in enumerate(pending_files, start=1):
-                msg.content = f"⬆️ Lade Dokument {idx}/{total} zu Manus …"
+                msg.content = f"⬆️ Lade Dokument {idx}/{total} zur Analyse …"
                 await msg.update()
                 fid = await loop.run_in_executor(
                     None, upload_file_to_manus, info["path"], info["name"]
