@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import re
 import shutil
 import sys
 import uuid
@@ -23,6 +25,33 @@ from src.pdf_generator import generate_markdown, save_report
 from src.schema import DUE_DILIGENCE_SCHEMA
 
 load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("imdue")
+
+# Generic, backend-agnostic messages shown to the user. Real exception details
+# (which may reveal the backend provider, internal URLs, API responses, etc.)
+# are only ever written to the server-side log, never sent to the chat.
+GENERIC_ERROR_MESSAGE = "❌ Es ist ein Fehler aufgetreten. Bitte versuche es erneut."
+GENERIC_UPLOAD_ERROR_MESSAGE = "❌ Upload fehlgeschlagen. Bitte versuche es erneut."
+
+# Patterns that could reveal which backend/provider is used; stripped from any
+# text that originates from the backend before it is ever shown to the user.
+_BACKEND_NAME_PATTERN = re.compile(r"manus", re.IGNORECASE)
+_URL_PATTERN = re.compile(r"https?://\S+")
+
+
+def _log_error(context: str, exc: BaseException) -> None:
+    """Log full exception details server-side only; never shown to the user."""
+    logger.exception("%s: %s", context, exc)
+
+
+def _sanitize_backend_text(text: str) -> str:
+    """Strip backend/provider names and URLs from text before showing it to the user."""
+    text = _URL_PATTERN.sub("", text)
+    text = _BACKEND_NAME_PATTERN.sub("Analyse-System", text)
+    return text
+
 
 BASE_DIR = Path(__file__).parent.parent
 REPORTS_DIR = BASE_DIR / "reports"
@@ -67,9 +96,7 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
 
     def format_status(event: dict) -> str:
         # API spec fields: agent_status, brief, description
-        import pprint
-
-        pprint.pprint(event)
+        logger.debug("status event: %r", event)
         status_info = event.get("status_update", {}) or {}
         brief = status_info.get("brief") or status_info.get("description", "")
         agent_status = status_info.get("agent_status", "")
@@ -78,8 +105,8 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
             parts.append(brief)
         elif agent_status:
             parts.append(agent_status.capitalize())
-        # replace manus if found in event
-        parts = [p.replace("Manus", "Analysis") for p in parts]
+        # never leak backend/provider names or URLs to the user
+        parts = [_sanitize_backend_text(p) for p in parts]
         return parts[0] if parts else "Status-Update"
 
     try:
@@ -137,7 +164,8 @@ async def main(message: cl.Message) -> None:
                     msg.content = f"✅ `{record['name']}` gespeichert ({len(pending_files)} Dokument(e) gesamt)."
                     await msg.update()
                 except Exception as exc:
-                    msg.content = f"❌ Upload fehlgeschlagen: {exc}"
+                    _log_error("upload failed", exc)
+                    msg.content = GENERIC_UPLOAD_ERROR_MESSAGE
                     await msg.update()
         return
 
@@ -217,7 +245,8 @@ async def main(message: cl.Message) -> None:
             ).send()
 
         except Exception as exc:
-            await cl.Message(content=f"❌ Fehler bei der Analyse: {exc}").send()
+            _log_error("analysis failed", exc)
+            await cl.Message(content=GENERIC_ERROR_MESSAGE).send()
         else:
             _cleanup_pending_files(pending_files)
             cl.user_session.set("pending_files", [])
@@ -231,9 +260,11 @@ async def main(message: cl.Message) -> None:
                 None, send_followup_message, task_id, message.content
             )
             reply = await loop.run_in_executor(None, poll_for_followup_reply, task_id)
+            reply = _sanitize_backend_text(reply) if reply else reply
             await cl.Message(content=reply or "(Keine Antwort erhalten)").send()
         except Exception as exc:
-            await cl.Message(content=f"❌ Fehler: {exc}").send()
+            _log_error("followup failed", exc)
+            await cl.Message(content=GENERIC_ERROR_MESSAGE).send()
         return
 
     await cl.Message(
