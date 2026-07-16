@@ -138,10 +138,26 @@ def poll_for_followup_reply(task_id: str, retries: int = 6, delay: int = 5) -> s
 
 
 def poll_for_result(task_id: str, timeout: int = 600) -> dict:
-    start = time.time()
-    while time.time() - start < timeout:
+    """Poll task.listMessages until a structured result appears.
+
+    `timeout` is an inactivity timeout, not a total-duration timeout: it is
+    reset every time a new event (e.g. a status_update reporting progress)
+    is observed for the task. Long-running analyses (>10 min) that keep
+    reporting progress are therefore not cut off, while a genuinely stuck
+    task (no new events at all) still times out.
+    """
+    seen_ids: set[str] = set()
+    last_activity = time.time()
+    while time.time() - last_activity < timeout:
         events = list_task_messages(task_id, limit=50)
+        new_event_seen = False
         for e in events:
+            event_id = e.get("id")
+            if event_id:
+                if event_id in seen_ids:
+                    continue
+                seen_ids.add(event_id)
+            new_event_seen = True
             result = _extract_structured_output(e)
             if result is not None:
                 return result
@@ -151,8 +167,10 @@ def poll_for_result(task_id: str, timeout: int = 600) -> dict:
             ):
                 err_detail = e.get("status_update", {}).get("description", "")
                 raise RuntimeError(f"Manus Task fehlgeschlagen: {err_detail}")
+        if new_event_seen:
+            last_activity = time.time()
         time.sleep(5)
-    raise TimeoutError(f"Task {task_id} Timeout nach {timeout}s.")
+    raise TimeoutError(f"Task {task_id} Timeout nach {timeout}s ohne Aktivität.")
 
 
 def get_available_skills(project_id: str | None = None) -> list:
@@ -170,20 +188,32 @@ def get_available_skills(project_id: str | None = None) -> list:
     return res.json().get("data", [])
 
 
-def list_task_messages(task_id: str, limit: int = 20, order: str = "desc") -> list:
+def list_task_messages(
+    task_id: str,
+    limit: int = 20,
+    order: str = "desc",
+    verbose: bool = False,
+) -> list:
     """Return latest Manus task events (status updates, results, etc.).
 
     Right after task.create, the task can briefly 404 on task.listMessages
     before it is fully indexed on the backend (eventual consistency). Retry a
     few times with a short backoff before giving up.
+
+    `verbose=True` additionally includes tool_used/plan_update/new_plan_step/
+    explanation events, useful for deriving fine-grained (e.g. per-skill)
+    progress.
     """
     retries = 5
     delay = 2
+    params: dict = {"task_id": task_id, "order": order, "limit": limit}
+    if verbose:
+        params["verbose"] = "true"
     for attempt in range(retries):
         res = requests.get(
             f"{MANUS_API_URL}/task.listMessages",
             headers=_headers(),
-            params={"task_id": task_id, "order": order, "limit": limit},
+            params=params,
             timeout=30,
             verify=_ssl_verify(),
         )

@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import logging
 import re
 import shutil
@@ -53,6 +54,84 @@ def _sanitize_backend_text(text: str) -> str:
     return text
 
 
+# The 10 Due-Diligence skills executed by the backend for each analysis
+# (see .github/skills/dd-skill-01 … dd-skill-10). Used to derive a per-skill
+# progress checklist from the free-text status/plan/tool events the backend
+# reports, since there is no dedicated "skill status" event.
+SKILL_STEPS: list[tuple[str, str, tuple[str, ...]]] = [
+    (
+        "dd-skill-01-document-inventory",
+        "Dokument-Inventarisierung",
+        ("dokument-inventar", "vollständigkeitsprüfung", "skill-01"),
+    ),
+    (
+        "dd-skill-02-grundbuch",
+        "Grundbuch- & Eigentumsanalyse",
+        ("grundbuch", "eigentumsstruktur", "grundschuld", "skill-02"),
+    ),
+    (
+        "dd-skill-03-mietanalyse",
+        "Mietvertrags- & Mieteranalyse",
+        ("mietvertrag", "mieteranalyse", "mietanalyse", "skill-03"),
+    ),
+    (
+        "dd-skill-04-finanzkennzahlen",
+        "Wirtschaftliche Kennzahlen",
+        ("finanzkennzahl", "kaufpreisfaktor", "mietrendite", "skill-04"),
+    ),
+    (
+        "dd-skill-05-technisch",
+        "Technische & bauliche Prüfung",
+        ("technische prüfung", "energieausweis", "instandhaltungsrückstau", "skill-05"),
+    ),
+    (
+        "dd-skill-06-weg",
+        "WEG-Analyse",
+        (
+            "weg-analyse",
+            "hausgeld",
+            "wohnungseigentümergemeinschaft",
+            "sonderumlage",
+            "skill-06",
+        ),
+    ),
+    (
+        "dd-skill-07-standort",
+        "Standort- & Marktanalyse",
+        ("standortanalyse", "makrolage", "mikrolage", "milieuschutz", "skill-07"),
+    ),
+    (
+        "dd-skill-08-rechtlich",
+        "Rechtliche Risikoprüfung",
+        (
+            "rechtliche risikoprüfung",
+            "kaufvertragsentwurf",
+            "mietpreisbremse",
+            "skill-08",
+        ),
+    ),
+    (
+        "dd-skill-09-risikoscore",
+        "Risikobewertung & Investment-Score",
+        ("risikoscore", "investment-score", "red flags", "skill-09"),
+    ),
+    (
+        "dd-skill-10-orchestrator",
+        "Gesamt-Workflow & Berichtserstellung",
+        ("orchestrator", "gesamt-workflow", "gesamtbericht", "skill-10"),
+    ),
+]
+
+
+def _match_skill(text: str) -> str | None:
+    """Return the skill id whose name/keywords occur in `text`, if any."""
+    text_lower = text.lower()
+    for skill_id, _, keywords in SKILL_STEPS:
+        if skill_id.lower() in text_lower or any(kw in text_lower for kw in keywords):
+            return skill_id
+    return None
+
+
 BASE_DIR = Path(__file__).parent.parent
 REPORTS_DIR = BASE_DIR / "reports"
 REPORTS_DIR.mkdir(exist_ok=True)
@@ -92,6 +171,7 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
     idx = 0
     seen_ids: set[str] = set()
     steps: list[str] = []
+    skill_status: dict[str, str] = {sid: "pending" for sid, _, _ in SKILL_STEPS}
     loop = asyncio.get_running_loop()
 
     def format_status(event: dict) -> str:
@@ -109,23 +189,66 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
         parts = [_sanitize_backend_text(p) for p in parts]
         return parts[0] if parts else "Status-Update"
 
+    def update_skill_status(event: dict) -> None:
+        """Best-effort mapping of free-text backend events onto the 10 DD skills."""
+        etype = event.get("type")
+        if etype == "plan_update":
+            for step in (event.get("plan_update", {}) or {}).get("steps", []) or []:
+                skill_id = _match_skill(step.get("title", ""))
+                if not skill_id:
+                    continue
+                step_status = step.get("status")
+                if step_status == "done":
+                    skill_status[skill_id] = "done"
+                elif step_status == "doing" and skill_status[skill_id] != "done":
+                    skill_status[skill_id] = "running"
+        elif etype == "tool_used":
+            tool_info = event.get("tool_used", {}) or {}
+            text = f"{tool_info.get('brief', '')} {tool_info.get('description', '')}"
+            skill_id = _match_skill(text)
+            if skill_id and skill_status[skill_id] != "done":
+                skill_status[skill_id] = "running"
+        elif etype == "status_update":
+            status_info = event.get("status_update", {}) or {}
+            text = (
+                f"{status_info.get('brief', '')} {status_info.get('description', '')}"
+            )
+            skill_id = _match_skill(text)
+            if skill_id and skill_status[skill_id] != "done":
+                skill_status[skill_id] = "running"
+
+    def render_skill_checklist() -> str:
+        icons = {"pending": "⬜", "running": "🔄", "done": "✅"}
+        lines = [
+            f"{icons[skill_status[sid]]} {i}. {label}"
+            for i, (sid, label, _) in enumerate(SKILL_STEPS, start=1)
+        ]
+        return "\n".join(lines)
+
     try:
         while True:
-            events = await loop.run_in_executor(None, list_task_messages, task_id, 20)
+            events = await loop.run_in_executor(
+                None, functools.partial(list_task_messages, task_id, 30, verbose=True)
+            )
             for event in reversed(events):
                 event_id = event.get("id")
                 if not event_id or event_id in seen_ids:
                     continue
                 seen_ids.add(event_id)
+                update_skill_status(event)
                 if event.get("type") == "status_update":
                     steps.append(format_status(event))
             idx = (idx + 1) % len(spinner)
             base = f"{spinner[idx]} analysiere Dokumente …"
+            checklist = render_skill_checklist()
             if steps:
                 recent = "\n".join(f"- {line}" for line in steps[-5:])
-                status_msg.content = f"{base}\n{recent}"
+                status_msg.content = (
+                    f"{base}\n\n**Skill-Fortschritt:**\n{checklist}\n\n"
+                    f"**Letzte Updates:**\n{recent}"
+                )
             else:
-                status_msg.content = f"{base}\n- arbeitee weiter …"
+                status_msg.content = f"{base}\n\n**Skill-Fortschritt:**\n{checklist}"
             await status_msg.update()
             await asyncio.sleep(4)
     except asyncio.CancelledError:
