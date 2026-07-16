@@ -9,7 +9,7 @@ Lade deine Maklerunterlagen hoch und erhalte in wenigen Minuten einen strukturie
 1. **Dokumente hochladen** — ziehe eine oder mehrere Dateien in den Chat (PDF, DOCX, JPG, PNG).  
    *Unterstützt: Exposé · Grundbuch · Mietverträge · Energieausweis · Grundrisse · WEG-Protokolle · Technische Gutachten · Kaufvertragsentwurf · Flurkarte · Altlastenauskunft*
 
-2. **Analyse starten** — tippe `analyse` (oder `bericht`, `start`, `auswerten`).
+2. **Analyse starten** — tippe `analysiere` (oder `bericht`, `start`, `auswerten`).
 
 3. **Bericht lesen** — der vollständige Due-Diligence-Bericht erscheint direkt im Chat, inklusive:
    - Executive Summary & Gesamtrisikobewertung
