@@ -171,18 +171,30 @@ def get_available_skills(project_id: str | None = None) -> list:
 
 
 def list_task_messages(task_id: str, limit: int = 20, order: str = "desc") -> list:
-    """Return latest Manus task events (status updates, results, etc.)."""
-    res = requests.get(
-        f"{MANUS_API_URL}/task.listMessages",
-        headers=_headers(),
-        params={"task_id": task_id, "order": order, "limit": limit},
-        timeout=30,
-        verify=_ssl_verify(),
-    )
-    res.raise_for_status()
-    # API returns key "messages", not "data"
-    body = res.json()
-    return body.get("messages") or body.get("data") or []
+    """Return latest Manus task events (status updates, results, etc.).
+
+    Right after task.create, the task can briefly 404 on task.listMessages
+    before it is fully indexed on the backend (eventual consistency). Retry a
+    few times with a short backoff before giving up.
+    """
+    retries = 5
+    delay = 2
+    for attempt in range(retries):
+        res = requests.get(
+            f"{MANUS_API_URL}/task.listMessages",
+            headers=_headers(),
+            params={"task_id": task_id, "order": order, "limit": limit},
+            timeout=30,
+            verify=_ssl_verify(),
+        )
+        if res.status_code == 404 and attempt < retries - 1:
+            time.sleep(delay)
+            continue
+        res.raise_for_status()
+        # API returns key "messages", not "data"
+        body = res.json()
+        return body.get("messages") or body.get("data") or []
+    return []
 
 
 def _extract_structured_output(event: dict) -> dict | None:
