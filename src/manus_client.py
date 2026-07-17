@@ -222,7 +222,12 @@ def create_analysis_task(file_ids: list, schema: dict) -> str:
     raise RuntimeError(f"task.create Antwort enthaelt keine task_id: {data}")
 
 
-def send_followup_message(task_id: str, content: str, schema: dict | None = None) -> None:
+def send_followup_message(
+    task_id: str,
+    content: str,
+    schema: dict | None = None,
+    file_ids: list | None = None,
+) -> None:
     """Continue an existing task with a follow-up message.
 
     Per the Structured Output schema lifecycle
@@ -232,14 +237,29 @@ def send_followup_message(task_id: str, content: str, schema: dict | None = None
     `schema` (e.g. DUE_DILIGENCE_SCHEMA) to re-arm extraction so the
     follow-up turn also produces a fresh structured_output_result - callers
     then use `poll_for_result` (not `poll_for_followup_reply`) to wait for it.
+
+    `file_ids`, if given, attaches newly uploaded documents to this turn
+    (e.g. the user adds more documents after the initial analysis) - the
+    existing task is reused rather than starting a new one, same as
+    `create_analysis_task` does for the first turn.
     """
     logger.info(
-        "send_followup_message: Task %s, %d Zeichen, schema=%s",
+        "send_followup_message: Task %s, %d Zeichen, schema=%s, %d Datei(en)",
         task_id,
         len(content),
         bool(schema),
+        len(file_ids or []),
     )
-    payload: dict = {"task_id": task_id, "message": {"content": content}}
+    if file_ids:
+        # Per API spec: files are ContentPart objects in the content array,
+        # not a separate "attachments" field (same shape as task.create).
+        content_parts: list = [{"type": "text", "text": content}]
+        for fid in file_ids:
+            content_parts.append({"type": "file", "file_id": fid})
+        message: dict = {"content": content_parts}
+    else:
+        message = {"content": content}
+    payload: dict = {"task_id": task_id, "message": message}
     if schema:
         payload["structured_output_schema"] = schema
     res = requests.post(
@@ -487,7 +507,10 @@ def poll_for_result(
         # reflect the *latest* known state (list_task_messages defaults to
         # newest-first order).
         for e in reversed(events):
-            if e.get("type") == "structured_output_result" and e.get("id") in stale_result_ids:
+            if (
+                e.get("type") == "structured_output_result"
+                and e.get("id") in stale_result_ids
+            ):
                 continue
             result = _extract_structured_output(e)
             if result is not None:

@@ -401,7 +401,111 @@ async def main(message: cl.Message) -> None:
                     await msg.update()
         return
 
-    # --- Analyse starten ---
+    # --- Nachfragen/Ergänzungen zu einer bereits laufenden/abgeschlossenen
+    # Analyse: ein Task wird immer weiterverwendet (egal ob es eine reine
+    # Rückfrage ist oder ob dabei zusätzliche Dokumente hochgeladen wurden).
+    # Ein neuer Manus-Task entsteht ausschließlich im ersten Zweig unten,
+    # wenn diese Chat-Session noch gar keinen task_id hat (= neuer Chat).
+    if task_id:
+        followup_count: int = cl.user_session.get("followup_count", 0)
+        if followup_count >= MAX_FOLLOWUP_QUESTIONS:
+            logger.info(
+                "main: Nachfrage-Limit erreicht fuer Task %s (%d/%d)",
+                task_id,
+                followup_count,
+                MAX_FOLLOWUP_QUESTIONS,
+            )
+            await cl.Message(
+                content=(
+                    f"ℹ️ Maximal {MAX_FOLLOWUP_QUESTIONS} Rückfragen/Ergänzungen pro "
+                    "Analyse sind aktuell möglich. Starte für weitere Fragen bitte "
+                    "eine neue Analyse."
+                )
+            ).send()
+            return
+        cl.user_session.set("followup_count", followup_count + 1)
+        logger.info(
+            "main: Nachfrage/Ergaenzung zu Task %s (%d/%d, %d neue Datei(en))",
+            task_id,
+            followup_count + 1,
+            MAX_FOLLOWUP_QUESTIONS,
+            len(pending_files),
+        )
+        followup_start = time.monotonic()
+        status_msg = await cl.Message(content="🔄 Verarbeite Ergänzung …").send()
+        status_task = asyncio.create_task(
+            stream_status_updates(task_id, status_msg, followup_start)
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            file_ids: list[str] = []
+            if pending_files:
+                total = len(pending_files)
+                for idx, info in enumerate(pending_files, start=1):
+                    status_msg.content = (
+                        f"⬆️ Lade zusätzliches Dokument {idx}/{total} hoch …"
+                    )
+                    await status_msg.update()
+                    fid = await run_sync(
+                        loop, upload_file_to_manus, info["path"], info["name"]
+                    )
+                    file_ids.append(fid)
+                logger.info(
+                    "main: %d zusaetzliche Datei(en) zu Manus hochgeladen fuer Task %s: %s",
+                    len(file_ids),
+                    task_id,
+                    file_ids,
+                )
+                status_msg.content = "🔄 Verarbeite Ergänzung …"
+                await status_msg.update()
+
+            followup_text = message.content.strip() or (
+                "Bitte berücksichtige die neu hochgeladenen Dokumente und "
+                "aktualisiere die Analyse entsprechend."
+            )
+            # Re-arm the schema so this follow-up turn produces a fresh
+            # structured_output_result instead of a plain text reply (a
+            # schema is only consumed once per task.sendMessage/task.create,
+            # see the Structured Output guide).
+            await run_sync(
+                loop,
+                send_followup_message,
+                task_id,
+                followup_text,
+                DUE_DILIGENCE_SCHEMA,
+                file_ids or None,
+            )
+            try:
+                result: dict = await run_sync(loop, poll_for_result, task_id)
+            finally:
+                status_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await status_task
+            logger.info("main: aktualisiertes Ergebnis fuer Task %s erhalten", task_id)
+
+            status_msg.content = "📄 Aktualisiere Bericht …"
+            await status_msg.update()
+
+            document_count = cl.user_session.get("document_count", 0) + len(file_ids)
+            cl.user_session.set("document_count", document_count)
+
+            await _deliver_result(
+                result,
+                session_dir=session_dir,
+                task_id=task_id,
+                start_time=followup_start,
+                started_at=datetime.now(),
+                document_count=document_count,
+            )
+        except Exception as exc:
+            _log_error("followup failed", exc)
+            await cl.Message(content=GENERIC_ERROR_MESSAGE).send()
+        else:
+            if pending_files:
+                cl.user_session.set("pending_files", [])
+        return
+
+    # --- Analyse starten (erster Task dieser Chat-Session) ---
     if message.content.lower().strip() in TRIGGER_WORDS:
         if not pending_files:
             logger.info("main: Analyse angefordert, aber keine Dokumente hochgeladen")
@@ -492,73 +596,6 @@ async def main(message: cl.Message) -> None:
             await cl.Message(content=GENERIC_ERROR_MESSAGE).send()
         else:
             cl.user_session.set("pending_files", [])
-        return
-
-    # --- Nachfragen/Ergänzungen nach abgeschlossener Analyse ---
-    if task_id:
-        followup_count: int = cl.user_session.get("followup_count", 0)
-        if followup_count >= MAX_FOLLOWUP_QUESTIONS:
-            logger.info(
-                "main: Nachfrage-Limit erreicht fuer Task %s (%d/%d)",
-                task_id,
-                followup_count,
-                MAX_FOLLOWUP_QUESTIONS,
-            )
-            await cl.Message(
-                content=(
-                    f"ℹ️ Maximal {MAX_FOLLOWUP_QUESTIONS} Rückfragen/Ergänzungen pro "
-                    "Analyse sind aktuell möglich. Starte für weitere Fragen bitte "
-                    "eine neue Analyse."
-                )
-            ).send()
-            return
-        cl.user_session.set("followup_count", followup_count + 1)
-        logger.info(
-            "main: Nachfrage/Ergaenzung zu Task %s (%d/%d)",
-            task_id,
-            followup_count + 1,
-            MAX_FOLLOWUP_QUESTIONS,
-        )
-        followup_start = time.monotonic()
-        status_msg = await cl.Message(content="🔄 Verarbeite Ergänzung …").send()
-        status_task = asyncio.create_task(
-            stream_status_updates(task_id, status_msg, followup_start)
-        )
-        try:
-            loop = asyncio.get_running_loop()
-            # Re-arm the schema so this follow-up turn produces a fresh
-            # structured_output_result instead of a plain text reply (a
-            # schema is only consumed once per task.sendMessage/task.create,
-            # see the Structured Output guide).
-            await run_sync(
-                loop,
-                send_followup_message,
-                task_id,
-                message.content,
-                DUE_DILIGENCE_SCHEMA,
-            )
-            try:
-                result: dict = await run_sync(loop, poll_for_result, task_id)
-            finally:
-                status_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await status_task
-            logger.info("main: aktualisiertes Ergebnis fuer Task %s erhalten", task_id)
-
-            status_msg.content = "📄 Aktualisiere Bericht …"
-            await status_msg.update()
-
-            await _deliver_result(
-                result,
-                session_dir=session_dir,
-                task_id=task_id,
-                start_time=followup_start,
-                started_at=datetime.now(),
-                document_count=cl.user_session.get("document_count", 0),
-            )
-        except Exception as exc:
-            _log_error("followup failed", exc)
-            await cl.Message(content=GENERIC_ERROR_MESSAGE).send()
         return
 
     await cl.Message(
