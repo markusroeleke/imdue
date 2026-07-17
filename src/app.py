@@ -115,7 +115,7 @@ def _persist_upload(
 
 
 async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
-    spinner = "⣾⣽⣻⢿⡿⣟⣯⣷".split()
+    spinner = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
     idx = 0
     seen_ids: set[str] = set()
     steps: list[str] = []
