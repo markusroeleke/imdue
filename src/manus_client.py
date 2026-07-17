@@ -48,12 +48,84 @@ def _headers() -> dict:
     return {"x-manus-api-key": api_key, "Content-Type": "application/json"}
 
 
+def _request_with_retry(
+    method: str, url: str, *, retries: int = 5, **kwargs
+) -> requests.Response:
+    """Perform an HTTP request, retrying on transient/rate-limit errors.
+
+    Retries (with exponential backoff, capped at 60s) on:
+    - 429 Too Many Requests (honors a numeric `Retry-After` header if present)
+    - 5xx server errors
+    - network-level exceptions (timeouts, connection resets, ...)
+
+    Any other status code (2xx, 4xx other than 429) is returned as-is for the
+    caller to handle (e.g. via `res.raise_for_status()`).
+    """
+    delay = 2.0
+    res: requests.Response | None = None
+    for attempt in range(retries):
+        try:
+            res = requests.request(method, url, **kwargs)
+        except requests.exceptions.RequestException as exc:
+            if attempt < retries - 1:
+                logger.warning(
+                    "%s %s: Netzwerkfehler (Versuch %d/%d): %s, warte %.0fs",
+                    method,
+                    url,
+                    attempt + 1,
+                    retries,
+                    exc,
+                    delay,
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, 60)
+                continue
+            logger.error(
+                "%s %s: Netzwerkfehler nach %d Versuchen: %s",
+                method,
+                url,
+                retries,
+                exc,
+            )
+            raise
+        if res.status_code == 429 and attempt < retries - 1:
+            retry_after = res.headers.get("Retry-After", "")
+            wait = float(retry_after) if retry_after.strip().isdigit() else delay
+            logger.warning(
+                "%s %s: 429 Too Many Requests (Versuch %d/%d), warte %.0fs",
+                method,
+                url,
+                attempt + 1,
+                retries,
+                wait,
+            )
+            time.sleep(wait)
+            delay = min(delay * 2, 60)
+            continue
+        if res.status_code >= 500 and attempt < retries - 1:
+            logger.warning(
+                "%s %s: Serverfehler %s (Versuch %d/%d), warte %.0fs",
+                method,
+                url,
+                res.status_code,
+                attempt + 1,
+                retries,
+                delay,
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
+            continue
+        return res
+    return res  # type: ignore[return-value]
+
+
 def upload_file_to_manus(file_path: str, file_name: str) -> str:
     logger.info("upload_file_to_manus: starte Upload fuer %s", file_name)
     # Use only the basename — no path separators that could cause a 400
     safe_name = Path(file_name).name or Path(file_path).name
     # API spec only accepts "filename" — no mime_type, no project_id
-    res = requests.post(
+    res = _request_with_retry(
+        "POST",
         f"{MANUS_API_URL}/file.upload",
         headers=_headers(),
         json={"filename": safe_name},
@@ -88,7 +160,8 @@ def upload_file_to_manus(file_path: str, file_name: str) -> str:
         file_size,
     )
     with open(file_path, "rb") as f:
-        put_res = requests.put(
+        put_res = _request_with_retry(
+            "PUT",
             upload_url,
             data=f,
             headers={"Content-Type": mime_type},
@@ -201,7 +274,8 @@ def create_analysis_task(file_ids: list, schema: dict) -> str:
     payload: dict = {"message": message, "structured_output_schema": schema}
     if project_id:
         payload["project_id"] = project_id
-    res = requests.post(
+    res = _request_with_retry(
+        "POST",
         f"{MANUS_API_URL}/task.create",
         headers=_headers(),
         json=payload,
@@ -262,7 +336,8 @@ def send_followup_message(
     payload: dict = {"task_id": task_id, "message": message}
     if schema:
         payload["structured_output_schema"] = schema
-    res = requests.post(
+    res = _request_with_retry(
+        "POST",
         f"{MANUS_API_URL}/task.sendMessage",
         headers=_headers(),
         json=payload,
@@ -640,7 +715,8 @@ def get_available_skills(project_id: str | None = None) -> list:
     params: dict = {}
     if project_id:
         params["project_id"] = project_id
-    res = requests.get(
+    res = _request_with_retry(
+        "GET",
         f"{MANUS_API_URL}/skill.list",
         headers=_headers(),
         params=params or None,
@@ -714,6 +790,19 @@ def list_task_messages(
                 retries,
             )
             time.sleep(delay)
+            continue
+        if res.status_code == 429 and attempt < retries - 1:
+            retry_after = res.headers.get("Retry-After", "")
+            wait = float(retry_after) if retry_after.strip().isdigit() else delay * 5
+            logger.warning(
+                "list_task_messages: 429 Too Many Requests fuer Task %s (Versuch %d/%d), "
+                "warte %.0fs",
+                task_id,
+                attempt + 1,
+                retries,
+                wait,
+            )
+            time.sleep(wait)
             continue
         res.raise_for_status()
         # API returns key "messages", not "data"
