@@ -139,12 +139,16 @@ async def stream_status_updates(
         parts = [_sanitize_backend_text(p) for p in parts]
         return parts[0] if parts else "Status-Update"
 
-    def update_skill_status(event: dict) -> None:
-        """Best-effort mapping of free-text backend events onto the 10 DD skills."""
+    def update_skill_status(event: dict, log: bool = True) -> None:
+        """Best-effort mapping of free-text backend events onto the 10 DD skills.
+
+        `log=False` suppresses match_skill's debug logging for events already
+        logged on a previous poll (see stream_status_updates loop below).
+        """
         etype = event.get("type")
         if etype == "plan_update":
             for step in (event.get("plan_update", {}) or {}).get("steps", []) or []:
-                skill_id = match_skill(step.get("title", ""))
+                skill_id = match_skill(step.get("title", ""), log=log)
                 if not skill_id:
                     continue
                 step_status = step.get("status")
@@ -155,7 +159,7 @@ async def stream_status_updates(
         elif etype == "tool_used":
             tool_info = event.get("tool_used", {}) or {}
             text = f"{tool_info.get('brief', '')} {tool_info.get('description', '')}"
-            skill_id = match_skill(text)
+            skill_id = match_skill(text, log=log)
             if skill_id and skill_status[skill_id] != "done":
                 skill_status[skill_id] = "running"
         elif etype == "status_update":
@@ -163,7 +167,7 @@ async def stream_status_updates(
             text = (
                 f"{status_info.get('brief', '')} {status_info.get('description', '')}"
             )
-            skill_id = match_skill(text)
+            skill_id = match_skill(text, log=log)
             if skill_id and skill_status[skill_id] != "done":
                 skill_status[skill_id] = "running"
 
@@ -196,9 +200,12 @@ async def stream_status_updates(
                 # its `steps` statuses in place (a live snapshot, not a
                 # one-off delta), so skipping already-seen ids would freeze
                 # the checklist at whatever state it had when first seen.
-                update_skill_status(event)
+                # Logging is still deduped: only genuinely new event ids are
+                # logged, to avoid repeating the same debug line every poll.
                 event_id = event.get("id")
-                if not event_id or event_id in seen_ids:
+                is_new_event = bool(event_id) and event_id not in seen_ids
+                update_skill_status(event, log=is_new_event)
+                if not event_id or not is_new_event:
                     continue
                 seen_ids.add(event_id)
                 if event.get("type") == "status_update":

@@ -354,40 +354,51 @@ SKILL_STEPS: list[tuple[str, str, tuple[str, ...]]] = [
 ]
 
 
-def match_skill(text: str) -> str | None:
-    """Return the skill id whose name/keywords occur in `text`, if any."""
+def match_skill(text: str, log: bool = True) -> str | None:
+    """Return the skill id whose name/keywords occur in `text`, if any.
+
+    `log=False` suppresses the debug line for events that have already been
+    logged on a previous poll (Manus re-sends the same plan_update event on
+    every poll while mutating its steps in place, so without this flag the
+    same match would be logged repeatedly every few seconds).
+    """
     text_lower = text.lower()
     for skill_id, _, keywords in SKILL_STEPS:
         if skill_id.lower() in text_lower or any(kw in text_lower for kw in keywords):
-            logger.debug("match_skill: %r -> %s", text, skill_id)
+            if log:
+                logger.debug("match_skill: %r -> %s", text, skill_id)
             return skill_id
     return None
 
 
-def _detect_step_progress(event: dict) -> tuple[str | None, bool]:
-    """Return (skill_id, is_done) an event can be attributed to, if any."""
+def _detect_step_progress(event: dict, log: bool = True) -> tuple[str | None, bool]:
+    """Return (skill_id, is_done) an event can be attributed to, if any.
+
+    `log=False` suppresses debug logging for this call (see `match_skill`).
+    """
     etype = event.get("type")
     if etype == "plan_update":
         for step in (event.get("plan_update", {}) or {}).get("steps", []) or []:
-            skill_id = match_skill(step.get("title", ""))
+            skill_id = match_skill(step.get("title", ""), log=log)
             if skill_id:
                 done = step.get("status") == "done"
-                logger.debug(
-                    "_detect_step_progress: plan_update step=%r skill_id=%s done=%s",
-                    step.get("title"),
-                    skill_id,
-                    done,
-                )
+                if log:
+                    logger.debug(
+                        "_detect_step_progress: plan_update step=%r skill_id=%s done=%s",
+                        step.get("title"),
+                        skill_id,
+                        done,
+                    )
                 return skill_id, done
         return None, False
     if etype == "tool_used":
         tool_info = event.get("tool_used", {}) or {}
         text = f"{tool_info.get('brief', '')} {tool_info.get('description', '')}"
-        return match_skill(text), False
+        return match_skill(text, log=log), False
     if etype == "status_update":
         status_info = event.get("status_update", {}) or {}
         text = f"{status_info.get('brief', '')} {status_info.get('description', '')}"
-        return match_skill(text), False
+        return match_skill(text, log=log), False
     return None, False
 
 
@@ -407,6 +418,7 @@ def poll_for_result(task_id: str, timeout: int = 1200) -> dict:
     skill_last_seen: dict[str, float] = {}
     skill_done: set[str] = set()
     overall_last_activity = time.time()
+    seen_event_ids: set[str] = set()
     logger.info(
         "poll_for_result: starte Polling fuer Task %s (timeout=%ds/Schritt)",
         task_id,
@@ -442,7 +454,16 @@ def poll_for_result(task_id: str, timeout: int = 1200) -> dict:
                     "poll_for_result: Task %s fehlgeschlagen: %s", task_id, err_detail
                 )
                 raise RuntimeError(f"Manus Task fehlgeschlagen: {err_detail}")
-            step_id, step_done = _detect_step_progress(e)
+            # Only log for events not already seen on a previous poll: Manus
+            # re-sends the same plan_update event id on every poll while
+            # mutating its steps in place, so events must still be
+            # re-processed every time (to catch status changes) but should
+            # only be logged once to avoid log spam.
+            event_id = e.get("id")
+            is_new_event = bool(event_id) and event_id not in seen_event_ids
+            if event_id:
+                seen_event_ids.add(event_id)
+            step_id, step_done = _detect_step_progress(e, log=is_new_event)
             if step_id:
                 skill_last_seen[step_id] = time.time()
                 if step_done:
