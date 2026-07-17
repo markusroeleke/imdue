@@ -114,7 +114,9 @@ def _persist_upload(
     return {"name": safe_name, "path": str(dest)}
 
 
-async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
+async def stream_status_updates(
+    task_id: str, status_msg: cl.Message, start_time: float
+) -> None:
     spinner = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
     idx = 0
     seen_ids: set[str] = set()
@@ -202,7 +204,8 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
                 if event.get("type") == "status_update":
                     steps.append(format_status(event))
             idx = (idx + 1) % len(spinner)
-            base = f"{spinner[idx]} analysiere Dokumente …"
+            elapsed_display = _format_elapsed(time.monotonic() - start_time)
+            base = f"{spinner[idx]} analysiere Dokumente … (⏱️ {elapsed_display})"
             checklist = render_skill_checklist()
             if steps:
                 recent = "\n".join(f"- {line}" for line in steps[-5:])
@@ -304,7 +307,11 @@ async def main(message: cl.Message) -> None:
             file_ids: list[str] = []
             total = len(pending_files)
             for idx, info in enumerate(pending_files, start=1):
-                msg.content = f"⬆️ Lade Dokument {idx}/{total} zur Analyse …"
+                elapsed_display = _format_elapsed(time.monotonic() - start_time)
+                msg.content = (
+                    f"⬆️ Lade Dokument {idx}/{total} zur Analyse … "
+                    f"(⏱️ {elapsed_display})"
+                )
                 await msg.update()
                 fid = await run_sync(
                     loop, upload_file_to_manus, info["path"], info["name"]
@@ -314,7 +321,10 @@ async def main(message: cl.Message) -> None:
                 "main: %d Datei(en) zu Manus hochgeladen: %s", len(file_ids), file_ids
             )
 
-            msg.content = "🔍 Analysiere Dokumente …"
+            msg.content = (
+                f"🔍 Analysiere Dokumente … "
+                f"(⏱️ {_format_elapsed(time.monotonic() - start_time)})"
+            )
             await msg.update()
 
             new_task_id = await run_sync(
@@ -323,7 +333,9 @@ async def main(message: cl.Message) -> None:
             logger.info("main: Analyse-Task erstellt: %s", new_task_id)
             cl.user_session.set("task_id", new_task_id)
 
-            status_task = asyncio.create_task(stream_status_updates(new_task_id, msg))
+            status_task = asyncio.create_task(
+                stream_status_updates(new_task_id, msg, start_time)
+            )
 
             try:
                 result: dict = await run_sync(loop, poll_for_result, new_task_id)
