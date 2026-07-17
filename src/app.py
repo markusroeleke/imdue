@@ -3,6 +3,7 @@ import json
 import re
 import shutil
 import sys
+import time
 import uuid
 from contextlib import suppress
 from datetime import datetime
@@ -61,6 +62,15 @@ def _sanitize_backend_text(text: str) -> str:
     text = _URL_PATTERN.sub("", text)
     text = _BACKEND_NAME_PATTERN.sub("Analyse-System", text)
     return text
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Format a duration in seconds as a short human-readable string (e.g. '2m 5s')."""
+    total = int(round(seconds))
+    minutes, secs = divmod(total, 60)
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
 
 
 BASE_DIR = Path(__file__).parent.parent
@@ -287,6 +297,8 @@ async def main(message: cl.Message) -> None:
         msg = await cl.Message(
             content=f"Starte Analyse für {len(pending_files)} Dokument(e) …"
         ).send()
+        analysis_started_at = datetime.now()
+        start_time = time.monotonic()
         try:
             loop = asyncio.get_running_loop()
             file_ids: list[str] = []
@@ -339,6 +351,31 @@ async def main(message: cl.Message) -> None:
             high = [f for f in flags if f["severity"] in ["High", "Critical"]]
             score_obj = result.get("investment_score", {})
 
+            elapsed_seconds = time.monotonic() - start_time
+            analysis_finished_at = datetime.now()
+            elapsed_display = _format_elapsed(elapsed_seconds)
+            timing_path = session_dir / f"timing_{uuid.uuid4().hex[:8]}.json"
+            timing_path.write_text(
+                json.dumps(
+                    {
+                        "task_id": new_task_id,
+                        "document_count": len(pending_files),
+                        "started_at": analysis_started_at.isoformat(),
+                        "finished_at": analysis_finished_at.isoformat(),
+                        "elapsed_seconds": round(elapsed_seconds, 2),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            logger.info(
+                "main: Analyse-Dauer fuer Task %s: %.2fs (gespeichert unter %s)",
+                new_task_id,
+                elapsed_seconds,
+                timing_path,
+            )
+
             await cl.Message(
                 content=(
                     "## ✅ Analyse abgeschlossen\n\n"
@@ -347,7 +384,8 @@ async def main(message: cl.Message) -> None:
                     f"**Investment-Score:** {score_obj.get('score', '–')} — "
                     f"{score_obj.get('classification', '–')}\n"
                     f"**Empfehlung:** {result.get('recommendation', '–')}\n"
-                    f"**Red Flags:** {len(flags)} ({len(high)} kritisch)\n\n"
+                    f"**Red Flags:** {len(flags)} ({len(high)} kritisch)\n"
+                    f"**Analysedauer:** {elapsed_display}\n\n"
                     "Vollständiger Bericht:↓"
                 ),
             ).send()
@@ -365,6 +403,23 @@ async def main(message: cl.Message) -> None:
 
         except Exception as exc:
             _log_error("analysis failed", exc)
+            elapsed_seconds = time.monotonic() - start_time
+            timing_path = session_dir / f"timing_{uuid.uuid4().hex[:8]}.json"
+            timing_path.write_text(
+                json.dumps(
+                    {
+                        "task_id": cl.user_session.get("task_id"),
+                        "document_count": len(pending_files),
+                        "started_at": analysis_started_at.isoformat(),
+                        "finished_at": datetime.now().isoformat(),
+                        "elapsed_seconds": round(elapsed_seconds, 2),
+                        "error": str(exc.__class__.__name__),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
             await cl.Message(content=GENERIC_ERROR_MESSAGE).send()
         else:
             cl.user_session.set("pending_files", [])
