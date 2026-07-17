@@ -1,6 +1,5 @@
 import asyncio
 import json
-import re
 import shutil
 import sys
 import time
@@ -27,7 +26,6 @@ from src.manus_client import (
     create_analysis_task,
     list_task_messages,
     match_skill,
-    poll_for_followup_reply,
     poll_for_result,
     send_followup_message,
     upload_file_to_manus,
@@ -45,23 +43,12 @@ logger = get_logger("app")
 # are only ever written to the server-side log, never sent to the chat.
 GENERIC_ERROR_MESSAGE = "❌ Es ist ein Fehler aufgetreten. Bitte versuche es erneut."
 GENERIC_UPLOAD_ERROR_MESSAGE = "❌ Upload fehlgeschlagen. Bitte versuche es erneut."
-
-# Patterns that could reveal which backend/provider is used; stripped from any
-# text that originates from the backend before it is ever shown to the user.
-_BACKEND_NAME_PATTERN = re.compile(r"manus", re.IGNORECASE)
-_URL_PATTERN = re.compile(r"https?://\S+")
+REPORT_DOWNLOAD_ENABLED = False
 
 
 def _log_error(context: str, exc: BaseException) -> None:
     """Log full exception details server-side only; never shown to the user."""
     logger.exception("%s: %s", context, exc)
-
-
-def _sanitize_backend_text(text: str) -> str:
-    """Strip backend/provider names and URLs from text before showing it to the user."""
-    text = _URL_PATTERN.sub("", text)
-    text = _BACKEND_NAME_PATTERN.sub("Analyse-System", text)
-    return text
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -112,6 +99,90 @@ def _persist_upload(
     shutil.copy2(source, dest)
     logger.debug("_persist_upload: %s -> %s", display_name, dest)
     return {"name": safe_name, "path": str(dest)}
+
+
+async def _deliver_result(
+    result: dict,
+    *,
+    session_dir: Path,
+    task_id: str,
+    start_time: float,
+    started_at: datetime,
+    document_count: int,
+) -> None:
+    """Persist a structured result and send the rendered report to the chat.
+
+    Shared by the initial analysis and any later follow-up/Ergänzung that
+    re-triggers a fresh structured_output_result, so both paths end up with
+    the same saved session artifacts (result.json/report.md/timing.json)
+    and the same chat response - never a raw JSON/text dump.
+    """
+    json_path = session_dir / "result.json"
+    json_path.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    logger.debug("_deliver_result: JSON-Ergebnis gespeichert unter %s", json_path)
+
+    elapsed_seconds = time.monotonic() - start_time
+    finished_at = datetime.now()
+    elapsed_display = _format_elapsed(elapsed_seconds)
+
+    report_md = generate_markdown(result, elapsed_display=elapsed_display)
+    md_path = str(session_dir / "report.md")
+    save_report(report_md, md_path)
+    logger.info("_deliver_result: Bericht gespeichert unter %s", md_path)
+
+    flags = result.get("red_flags", [])
+    high = [f for f in flags if f["severity"] in ["High", "Critical"]]
+    score_obj = result.get("investment_score", {})
+
+    timing_path = session_dir / "timing.json"
+    timing_path.write_text(
+        json.dumps(
+            {
+                "task_id": task_id,
+                "document_count": document_count,
+                "started_at": started_at.isoformat(),
+                "finished_at": finished_at.isoformat(),
+                "elapsed_seconds": round(elapsed_seconds, 2),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    logger.info(
+        "_deliver_result: Analyse-Dauer fuer Task %s: %.2fs (gespeichert unter %s)",
+        task_id,
+        elapsed_seconds,
+        timing_path,
+    )
+
+    await cl.Message(
+        content=(
+            "## ✅ Analyse abgeschlossen\n\n"
+            f"**Objekt:** {result.get('property_address') or '–'}\n"
+            f"**Gesamtrisiko:** {result.get('overall_risk_level', '–')}\n"
+            f"**Investment-Score:** {score_obj.get('score', '–')} — "
+            f"{score_obj.get('classification', '–')}\n"
+            f"**Empfehlung:** {result.get('recommendation', '–')}\n"
+            f"**Red Flags:** {len(flags)} ({len(high)} kritisch)\n"
+            f"**Analysedauer:** {elapsed_display}\n\n"
+            "Vollständiger Bericht:↓"
+        ),
+    ).send()
+    await cl.Message(content=report_md).send()
+    if REPORT_DOWNLOAD_ENABLED:
+        await cl.Message(
+            content="Bericht als Datei:",
+            elements=[
+                cl.File(
+                    name="Due_Diligence_Bericht.md",
+                    path=md_path,
+                    mime="text/markdown",
+                )
+            ],
+        ).send()
 
 
 async def stream_status_updates(
@@ -367,6 +438,7 @@ async def main(message: cl.Message) -> None:
             )
             logger.info("main: Analyse-Task erstellt: %s", new_task_id)
             cl.user_session.set("task_id", new_task_id)
+            cl.user_session.set("document_count", len(pending_files))
 
             status_task = asyncio.create_task(
                 stream_status_updates(new_task_id, msg, start_time)
@@ -383,73 +455,14 @@ async def main(message: cl.Message) -> None:
             msg.content = "📄 Erstelle Bericht …"
             await msg.update()
 
-            json_path = session_dir / "result.json"
-            json_path.write_text(
-                json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+            await _deliver_result(
+                result,
+                session_dir=session_dir,
+                task_id=new_task_id,
+                start_time=start_time,
+                started_at=analysis_started_at,
+                document_count=len(pending_files),
             )
-            logger.debug("main: JSON-Ergebnis gespeichert unter %s", json_path)
-
-            # Compute elapsed time BEFORE generating the report so it can be
-            # embedded in the report itself, not just mentioned in the chat.
-            elapsed_seconds = time.monotonic() - start_time
-            analysis_finished_at = datetime.now()
-            elapsed_display = _format_elapsed(elapsed_seconds)
-
-            report_md = generate_markdown(result, elapsed_display=elapsed_display)
-            md_path = str(session_dir / "report.md")
-            save_report(report_md, md_path)
-            logger.info("main: Bericht gespeichert unter %s", md_path)
-
-            flags = result.get("red_flags", [])
-            high = [f for f in flags if f["severity"] in ["High", "Critical"]]
-            score_obj = result.get("investment_score", {})
-
-            timing_path = session_dir / "timing.json"
-            timing_path.write_text(
-                json.dumps(
-                    {
-                        "task_id": new_task_id,
-                        "document_count": len(pending_files),
-                        "started_at": analysis_started_at.isoformat(),
-                        "finished_at": analysis_finished_at.isoformat(),
-                        "elapsed_seconds": round(elapsed_seconds, 2),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-            logger.info(
-                "main: Analyse-Dauer fuer Task %s: %.2fs (gespeichert unter %s)",
-                new_task_id,
-                elapsed_seconds,
-                timing_path,
-            )
-
-            await cl.Message(
-                content=(
-                    "## ✅ Analyse abgeschlossen\n\n"
-                    f"**Objekt:** {result.get('property_address') or '–'}\n"
-                    f"**Gesamtrisiko:** {result.get('overall_risk_level', '–')}\n"
-                    f"**Investment-Score:** {score_obj.get('score', '–')} — "
-                    f"{score_obj.get('classification', '–')}\n"
-                    f"**Empfehlung:** {result.get('recommendation', '–')}\n"
-                    f"**Red Flags:** {len(flags)} ({len(high)} kritisch)\n"
-                    f"**Analysedauer:** {elapsed_display}\n\n"
-                    "Vollständiger Bericht:↓"
-                ),
-            ).send()
-            await cl.Message(content=report_md).send()
-            await cl.Message(
-                content="Bericht als Datei:",
-                elements=[
-                    cl.File(
-                        name="Due_Diligence_Bericht.md",
-                        path=md_path,
-                        mime="text/markdown",
-                    )
-                ],
-            ).send()
 
         except Exception as exc:
             _log_error("analysis failed", exc)
@@ -475,18 +488,46 @@ async def main(message: cl.Message) -> None:
             cl.user_session.set("pending_files", [])
         return
 
-    # --- Nachfragen nach abgeschlossener Analyse ---
+    # --- Nachfragen/Ergänzungen nach abgeschlossener Analyse ---
     if task_id:
-        logger.info("main: Nachfrage zu Task %s", task_id)
+        logger.info("main: Nachfrage/Ergaenzung zu Task %s", task_id)
+        followup_start = time.monotonic()
+        status_msg = await cl.Message(content="🔄 Verarbeite Ergänzung …").send()
+        status_task = asyncio.create_task(
+            stream_status_updates(task_id, status_msg, followup_start)
+        )
         try:
             loop = asyncio.get_running_loop()
-            await run_sync(loop, send_followup_message, task_id, message.content)
-            reply = await run_sync(loop, poll_for_followup_reply, task_id)
-            reply = _sanitize_backend_text(reply) if reply else reply
-            logger.debug(
-                "main: Nachfrage-Antwort erhalten (%d Zeichen)", len(reply or "")
+            # Re-arm the schema so this follow-up turn produces a fresh
+            # structured_output_result instead of a plain text reply (a
+            # schema is only consumed once per task.sendMessage/task.create,
+            # see the Structured Output guide).
+            await run_sync(
+                loop,
+                send_followup_message,
+                task_id,
+                message.content,
+                DUE_DILIGENCE_SCHEMA,
             )
-            await cl.Message(content=reply or "(Keine Antwort erhalten)").send()
+            try:
+                result: dict = await run_sync(loop, poll_for_result, task_id)
+            finally:
+                status_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await status_task
+            logger.info("main: aktualisiertes Ergebnis fuer Task %s erhalten", task_id)
+
+            status_msg.content = "📄 Aktualisiere Bericht …"
+            await status_msg.update()
+
+            await _deliver_result(
+                result,
+                session_dir=session_dir,
+                task_id=task_id,
+                start_time=followup_start,
+                started_at=datetime.now(),
+                document_count=cl.user_session.get("document_count", 0),
+            )
         except Exception as exc:
             _log_error("followup failed", exc)
             await cl.Message(content=GENERIC_ERROR_MESSAGE).send()

@@ -222,13 +222,30 @@ def create_analysis_task(file_ids: list, schema: dict) -> str:
     raise RuntimeError(f"task.create Antwort enthaelt keine task_id: {data}")
 
 
-def send_followup_message(task_id: str, content: str) -> None:
-    """Continue an existing task with a follow-up question (no structured output)."""
-    logger.info("send_followup_message: Task %s, %d Zeichen", task_id, len(content))
+def send_followup_message(task_id: str, content: str, schema: dict | None = None) -> None:
+    """Continue an existing task with a follow-up message.
+
+    Per the Structured Output schema lifecycle
+    (https://open.manus.ai/docs/v2/structured-output#schema-lifecycle), the
+    schema armed on task.create is consumed after the first extraction; a
+    plain task.sendMessage without `schema` triggers no new extraction. Pass
+    `schema` (e.g. DUE_DILIGENCE_SCHEMA) to re-arm extraction so the
+    follow-up turn also produces a fresh structured_output_result - callers
+    then use `poll_for_result` (not `poll_for_followup_reply`) to wait for it.
+    """
+    logger.info(
+        "send_followup_message: Task %s, %d Zeichen, schema=%s",
+        task_id,
+        len(content),
+        bool(schema),
+    )
+    payload: dict = {"task_id": task_id, "message": {"content": content}}
+    if schema:
+        payload["structured_output_schema"] = schema
     res = requests.post(
         f"{MANUS_API_URL}/task.sendMessage",
         headers=_headers(),
-        json={"task_id": task_id, "message": {"content": content}},
+        json=payload,
         timeout=30,
         verify=_ssl_verify(),
     )
@@ -438,11 +455,24 @@ def poll_for_result(
     stopped_at: float | None = None
     nudged_waiting = False
     seen_event_ids: set[str] = set()
+    # A task_id is reused across multiple turns (the initial analysis, then
+    # any follow-up/Ergänzung re-arming the schema via send_followup_message).
+    # task.listMessages always returns the *whole* history, so without this
+    # baseline the very first poll of a later call would immediately return
+    # a stale structured_output_result left over from an earlier turn instead
+    # of waiting for the new one.
+    stale_result_ids = {
+        e.get("id")
+        for e in list_task_messages(task_id, limit=50, verbose=True)
+        if e.get("type") == "structured_output_result" and e.get("id")
+    }
     logger.info(
-        "poll_for_result: starte Polling fuer Task %s (timeout=%ds, extraction_timeout=%ds)",
+        "poll_for_result: starte Polling fuer Task %s (timeout=%ds, extraction_timeout=%ds, "
+        "%d bereits vorhandene(s) Ergebnis(se) werden ignoriert)",
         task_id,
         timeout,
         extraction_timeout,
+        len(stale_result_ids),
     )
     poll_count = 0
     while True:
@@ -457,6 +487,8 @@ def poll_for_result(
         # reflect the *latest* known state (list_task_messages defaults to
         # newest-first order).
         for e in reversed(events):
+            if e.get("type") == "structured_output_result" and e.get("id") in stale_result_ids:
+                continue
             result = _extract_structured_output(e)
             if result is not None:
                 logger.info(
