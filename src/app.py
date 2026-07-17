@@ -134,7 +134,6 @@ async def stream_status_updates(
     seen_ids: set[str] = set()
     skill_status: dict[str, str] = {sid: "pending" for sid, _, _ in SKILL_STEPS}
     skill_label = {sid: label for sid, label, _ in SKILL_STEPS}
-    skill_order = [sid for sid, _, _ in SKILL_STEPS]
     milestones: list[str] = []
     loop = asyncio.get_running_loop()
 
@@ -143,25 +142,12 @@ async def stream_status_updates(
         if not milestones or milestones[-1] != text:
             milestones.append(text)
 
-    def mark_earlier_done(skill_id: str) -> None:
-        """Mark every skill preceding `skill_id` in SKILL_STEPS as done.
-
-        Best-effort keyword matching can miss an individual skill's own
-        "done" event (e.g. its plan step title never matched our keywords),
-        so once a later skill in the fixed 10-step pipeline is seen
-        running/done, everything before it must already have finished too.
-        """
-        for sid in skill_order[: skill_order.index(skill_id)]:
-            mark_done(sid)
-
     def mark_running(skill_id: str) -> None:
-        mark_earlier_done(skill_id)
         if skill_status[skill_id] == "pending":
             skill_status[skill_id] = "running"
             note(f"🔄 Gestartet: {skill_label[skill_id]}")
 
     def mark_done(skill_id: str) -> None:
-        mark_earlier_done(skill_id)
         if skill_status[skill_id] != "done":
             skill_status[skill_id] = "done"
             note(f"✅ Abgeschlossen: {skill_label[skill_id]}")
