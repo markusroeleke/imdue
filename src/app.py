@@ -61,6 +61,13 @@ MAX_FOLLOWUP_QUESTIONS = 3
 MAX_PDF_COUNT = 3
 MAX_PDF_PAGES = 10
 
+# Daily cap on new analyses (task.create calls) per client, to bound
+# Manus API cost/usage. There is no login/auth system (MVP spec: "anonyme
+# Sessions ohne Login"), so the client's IP address is used as a
+# best-effort identity. Persisted to RATE_LIMIT_FILE so the cap survives
+# app restarts and is shared across chat sessions/tabs from the same IP.
+MAX_ANALYSES_PER_DAY = 2
+
 
 def _log_error(context: str, exc: BaseException) -> None:
     """Log full exception details server-side only; never shown to the user."""
@@ -79,6 +86,9 @@ def _format_elapsed(seconds: float) -> str:
 BASE_DIR = Path(__file__).parent.parent
 SESSIONS_DIR = BASE_DIR / "sessions"
 SESSIONS_DIR.mkdir(exist_ok=True)
+
+RATE_LIMIT_FILE = SESSIONS_DIR / "rate_limits.json"
+_rate_limit_lock = asyncio.Lock()
 
 TRIGGER_WORDS = {
     "analyse",
@@ -102,6 +112,76 @@ def _new_session_dir() -> Path:
     session_dir.mkdir(parents=True, exist_ok=True)
     logger.debug("_new_session_dir: erstellt %s", session_dir)
     return session_dir
+
+
+def _client_ip() -> str:
+    """Best-effort client identity for MAX_ANALYSES_PER_DAY (no auth exists).
+
+    Chainlit's underlying python-socketio/engineio ASGI adapter always
+    reports environ['REMOTE_ADDR'] as a hardcoded '127.0.0.1' (see
+    engineio/async_drivers/asgi.py) rather than the real client address, so
+    the real IP must be read from the raw ASGI scope instead. Falls back to
+    'X-Forwarded-For' first in case of a reverse proxy in front of the app,
+    then to 'unknown' (all such clients then share one bucket, the safe/
+    conservative side to fail on) if neither is available.
+    """
+    environ = getattr(cl.context.session, "environ", None) or {}
+    forwarded_for = environ.get("HTTP_X_FORWARDED_FOR")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    client = (environ.get("asgi.scope") or {}).get("client")
+    if client:
+        return client[0]
+    return "unknown"
+
+
+async def _check_daily_rate_limit(client_ip: str) -> bool:
+    """Atomically check and, if allowed, register one analysis for today.
+
+    Returns True (and registers the attempt) if `client_ip` is still under
+    MAX_ANALYSES_PER_DAY for today (UTC date); returns False without
+    registering anything if the daily cap is already reached.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    async with _rate_limit_lock:
+        state: dict = {}
+        if RATE_LIMIT_FILE.exists():
+            try:
+                state = json.loads(RATE_LIMIT_FILE.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning(
+                    "_check_daily_rate_limit: konnte %s nicht lesen: %s",
+                    RATE_LIMIT_FILE,
+                    exc,
+                )
+        entry = state.get(client_ip)
+        count = entry["count"] if entry and entry.get("date") == today else 0
+        if count >= MAX_ANALYSES_PER_DAY:
+            logger.info(
+                "_check_daily_rate_limit: Tageslimit erreicht fuer %s (%d/%d)",
+                client_ip,
+                count,
+                MAX_ANALYSES_PER_DAY,
+            )
+            return False
+        state[client_ip] = {"date": today, "count": count + 1}
+        try:
+            RATE_LIMIT_FILE.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError as exc:
+            logger.warning(
+                "_check_daily_rate_limit: konnte %s nicht schreiben: %s",
+                RATE_LIMIT_FILE,
+                exc,
+            )
+        logger.info(
+            "_check_daily_rate_limit: Analyse %d/%d heute fuer %s registriert",
+            count + 1,
+            MAX_ANALYSES_PER_DAY,
+            client_ip,
+        )
+        return True
 
 
 def _persist_upload(
@@ -587,6 +667,16 @@ async def main(message: cl.Message) -> None:
         if not pending_files:
             logger.info("main: Analyse angefordert, aber keine Dokumente hochgeladen")
             await cl.Message(content="Bitte zuerst Dokumente hochladen.").send()
+            return
+
+        client_ip = _client_ip()
+        if not await _check_daily_rate_limit(client_ip):
+            await cl.Message(
+                content=(
+                    f"❌ Du hast das Tageslimit von {MAX_ANALYSES_PER_DAY} Analysen "
+                    "erreicht. Bitte versuche es morgen erneut."
+                )
+            ).send()
             return
 
         logger.info("main: starte Analyse fuer %d Dokument(e)", len(pending_files))
