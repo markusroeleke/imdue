@@ -6,7 +6,7 @@ Upload your property documents and receive a structured due diligence report wit
 
 ## How it works
 
-1. **Upload documents** — drag and drop one or more files (max. 3) into the chat (PDF with max 5 pages).  
+1. **Upload documents** — drag and drop one or more files (max. 3) into the chat (PDF with max 10 pages).  
    *Supported: Exposé · Land register · Lease agreements · Energy certificate · Floor plans · WEG minutes · Technical reports · Purchase contract draft · Site map · Contamination report*
 
 2. **Start analysis** — type `analyse` (or `report`, `start`, `auswerten`).

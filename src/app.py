@@ -59,7 +59,7 @@ MAX_FOLLOWUP_QUESTIONS = 3
 # .chainlit/config.toml (accept/max_files), but re-checked here server-side
 # since that config can be bypassed (e.g. direct API calls, edited requests).
 MAX_PDF_COUNT = 3
-MAX_PDF_PAGES = 5
+MAX_PDF_PAGES = 10
 
 
 def _log_error(context: str, exc: BaseException) -> None:
