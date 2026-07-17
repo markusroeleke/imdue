@@ -117,33 +117,61 @@ def _persist_upload(
 async def stream_status_updates(
     task_id: str, status_msg: cl.Message, start_time: float
 ) -> None:
+    """Periodically refresh `status_msg` with the analysis' progress.
+
+    Only our own, curated German wording is ever shown to the user - never
+    the backend's raw `brief`/`description`/tool-name text. That text is
+    free-form and can reveal implementation details (which provider is used,
+    internal tool names, etc.), so instead this derives a purely internal
+    view of progress: which of the 10 DD skills (see SKILL_STEPS) is
+    pending/running/done, plus a couple of curated milestones (started/
+    finished a step, wrapping up the report). This still gives the user a
+    meaningful, live glimpse into what is happening without ever leaking
+    which backend/provider performs the analysis.
+    """
     spinner = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
     idx = 0
     seen_ids: set[str] = set()
-    steps: list[str] = []
     skill_status: dict[str, str] = {sid: "pending" for sid, _, _ in SKILL_STEPS}
+    skill_label = {sid: label for sid, label, _ in SKILL_STEPS}
+    skill_order = [sid for sid, _, _ in SKILL_STEPS]
+    milestones: list[str] = []
     loop = asyncio.get_running_loop()
 
-    def format_status(event: dict) -> str:
-        # API spec fields: agent_status, brief, description
-        logger.debug("status event: %r", event)
-        status_info = event.get("status_update", {}) or {}
-        brief = status_info.get("brief") or status_info.get("description", "")
-        agent_status = status_info.get("agent_status", "")
-        parts: list[str] = []
-        if brief:
-            parts.append(brief)
-        elif agent_status:
-            parts.append(agent_status.capitalize())
-        # never leak backend/provider names or URLs to the user
-        parts = [_sanitize_backend_text(p) for p in parts]
-        return parts[0] if parts else "Status-Update"
+    def note(text: str) -> None:
+        """Append a curated (never backend-derived) milestone line, deduped."""
+        if not milestones or milestones[-1] != text:
+            milestones.append(text)
 
-    def update_skill_status(event: dict, log: bool = True) -> None:
-        """Best-effort mapping of free-text backend events onto the 10 DD skills.
+    def mark_earlier_done(skill_id: str) -> None:
+        """Mark every skill preceding `skill_id` in SKILL_STEPS as done.
 
-        `log=False` suppresses match_skill's debug logging for events already
-        logged on a previous poll (see stream_status_updates loop below).
+        Best-effort keyword matching can miss an individual skill's own
+        "done" event (e.g. its plan step title never matched our keywords),
+        so once a later skill in the fixed 10-step pipeline is seen
+        running/done, everything before it must already have finished too.
+        """
+        for sid in skill_order[: skill_order.index(skill_id)]:
+            mark_done(sid)
+
+    def mark_running(skill_id: str) -> None:
+        mark_earlier_done(skill_id)
+        if skill_status[skill_id] == "pending":
+            skill_status[skill_id] = "running"
+            note(f"🔄 Gestartet: {skill_label[skill_id]}")
+
+    def mark_done(skill_id: str) -> None:
+        mark_earlier_done(skill_id)
+        if skill_status[skill_id] != "done":
+            skill_status[skill_id] = "done"
+            note(f"✅ Abgeschlossen: {skill_label[skill_id]}")
+
+    def apply_event(event: dict, log: bool = True) -> None:
+        """Update skill_status/milestones from one backend event.
+
+        Only ever reads which skill an event maps to (via `match_skill`) and
+        the plan step's own status/`agent_status` enum value - never any
+        free-form text is stored or displayed.
         """
         etype = event.get("type")
         if etype == "plan_update":
@@ -153,23 +181,28 @@ async def stream_status_updates(
                     continue
                 step_status = step.get("status")
                 if step_status == "done":
-                    skill_status[skill_id] = "done"
-                elif step_status == "doing" and skill_status[skill_id] != "done":
-                    skill_status[skill_id] = "running"
+                    mark_done(skill_id)
+                elif step_status == "doing":
+                    mark_running(skill_id)
         elif etype == "tool_used":
             tool_info = event.get("tool_used", {}) or {}
             text = f"{tool_info.get('brief', '')} {tool_info.get('description', '')}"
             skill_id = match_skill(text, log=log)
-            if skill_id and skill_status[skill_id] != "done":
-                skill_status[skill_id] = "running"
+            if skill_id:
+                mark_running(skill_id)
         elif etype == "status_update":
             status_info = event.get("status_update", {}) or {}
             text = (
                 f"{status_info.get('brief', '')} {status_info.get('description', '')}"
             )
             skill_id = match_skill(text, log=log)
-            if skill_id and skill_status[skill_id] != "done":
-                skill_status[skill_id] = "running"
+            if skill_id:
+                mark_running(skill_id)
+            agent_status = status_info.get("agent_status")
+            if agent_status == "stopped":
+                note("🧮 Ergebnisse werden zusammengeführt …")
+            elif agent_status == "waiting":
+                note("⏳ Ergänze fehlende Informationen …")
 
     def render_skill_checklist() -> str:
         icons = {"pending": "⬜", "running": "🔄", "done": "✅"}
@@ -194,8 +227,8 @@ async def stream_status_updates(
                 len(events),
             )
             for event in reversed(events):
-                # Always re-apply skill/plan status from every event the API
-                # currently returns, even if its id was already seen: Manus
+                # Always re-apply status from every event the API currently
+                # returns, even if its id was already seen: the backend
                 # reuses the same event id for a plan_update while mutating
                 # its `steps` statuses in place (a live snapshot, not a
                 # one-off delta), so skipping already-seen ids would freeze
@@ -204,18 +237,15 @@ async def stream_status_updates(
                 # logged, to avoid repeating the same debug line every poll.
                 event_id = event.get("id")
                 is_new_event = bool(event_id) and event_id not in seen_ids
-                update_skill_status(event, log=is_new_event)
-                if not event_id or not is_new_event:
-                    continue
-                seen_ids.add(event_id)
-                if event.get("type") == "status_update":
-                    steps.append(format_status(event))
+                apply_event(event, log=is_new_event)
+                if event_id:
+                    seen_ids.add(event_id)
             idx = (idx + 1) % len(spinner)
             elapsed_display = _format_elapsed(time.monotonic() - start_time)
             base = f"{spinner[idx]} analysiere Dokumente … (⏱️ {elapsed_display})"
             checklist = render_skill_checklist()
-            if steps:
-                recent = "\n".join(f"- {line}" for line in steps[-5:])
+            if milestones:
+                recent = "\n".join(f"- {line}" for line in milestones[-5:])
                 status_msg.content = (
                     f"{base}\n\n**Analyse-Fortschritt:**\n{checklist}\n\n"
                     f"**Letzte Updates:**\n{recent}"
