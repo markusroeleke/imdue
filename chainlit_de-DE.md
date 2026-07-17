@@ -6,7 +6,7 @@ Lade deine Maklerunterlagen hoch und erhalte in wenigen Minuten einen strukturie
 
 ## So funktioniert es
 
-1. **Dokumente hochladen** — ziehe eine oder mehrere Dateien in den Chat (PDF, DOCX, JPG, PNG).  
+1. **Dokumente hochladen** — ziehe eine oder mehrere (max. 3) Dateien (PDF mit max. 5 Seiten) in den Chat.  
    *Unterstützt: Exposé · Grundbuch · Mietverträge · Energieausweis · Grundrisse · WEG-Protokolle · Technische Gutachten · Kaufvertragsentwurf · Flurkarte · Altlastenauskunft*
 
 2. **Analyse starten** — tippe `analysiere` (oder `bericht`, `start`, `auswerten`).

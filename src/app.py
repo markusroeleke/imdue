@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import chainlit as cl
 import requests
 from dotenv import load_dotenv
+from pypdf import PdfReader
 
 from src.logging_utils import (
     bind_session_log,
@@ -44,12 +45,21 @@ logger = get_logger("app")
 # are only ever written to the server-side log, never sent to the chat.
 GENERIC_ERROR_MESSAGE = "❌ Es ist ein Fehler aufgetreten. Bitte versuche es erneut."
 GENERIC_UPLOAD_ERROR_MESSAGE = "❌ Upload fehlgeschlagen. Bitte versuche es erneut."
-REPORT_DOWNLOAD_ENABLED = False
+REPORT_DOWNLOAD_ENABLED = (
+    True  # TODO: make this configurable (env var) if needed later.
+)
 
 # Global cap on follow-up/Ergänzung turns per analysis, to bound the extra
 # Manus turns (cost/runtime) a single chat session can trigger after the
 # initial analysis. TODO: make this configurable (env var) if needed later.
 MAX_FOLLOWUP_QUESTIONS = 3
+
+# Uploaded documents must be PDFs only, capped in number and length. Also
+# enforced client-side via [features.spontaneous_file_upload] in
+# .chainlit/config.toml (accept/max_files), but re-checked here server-side
+# since that config can be bypassed (e.g. direct API calls, edited requests).
+MAX_PDF_COUNT = 3
+MAX_PDF_PAGES = 5
 
 
 def _log_error(context: str, exc: BaseException) -> None:
@@ -105,6 +115,33 @@ def _persist_upload(
     shutil.copy2(source, dest)
     logger.debug("_persist_upload: %s -> %s", display_name, dest)
     return {"name": safe_name, "path": str(dest)}
+
+
+def _validate_pdf_upload(temp_path: str, display_name: str) -> str | None:
+    """Check that an uploaded file is a real PDF within the page limit.
+
+    Returns an error message (to show the user) if the file is rejected,
+    or `None` if it passes validation.
+    """
+    if Path(display_name).suffix.lower() != ".pdf":
+        return f"❌ `{display_name}` ist keine PDF-Datei. Es werden ausschließlich PDF-Dokumente akzeptiert."
+    try:
+        num_pages = len(PdfReader(temp_path).pages)
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - any parse failure -> reject as invalid PDF
+        logger.warning(
+            "_validate_pdf_upload: %s konnte nicht als PDF gelesen werden: %s",
+            display_name,
+            exc,
+        )
+        return f"❌ `{display_name}` konnte nicht als gültige PDF-Datei gelesen werden."
+    if num_pages > MAX_PDF_PAGES:
+        return (
+            f"❌ `{display_name}` hat {num_pages} Seiten. Maximal {MAX_PDF_PAGES} "
+            "Seiten pro PDF sind erlaubt."
+        )
+    return None
 
 
 async def _deliver_result(
@@ -364,8 +401,8 @@ async def start() -> None:
     await cl.Message(
         content=(
             "## Willkommen bei der Immobilien Due Diligence KI\n\n"
-            "1. Lade deine Maklerunterlagen hoch (Exposé, Grundbuch, Mietverträge, Gutachten …)\n"
-            "2. Tippe `analysiere` für den vollständigen Bericht\n"
+            "1. Lade deine Maklerunterlagen als PDF hoch (Exposé, Grundbuch, Mietverträge, Gutachten …)\n"
+            "2. Tippe `analysiere` im chat für den vollständigen Bericht\n"
             "3. Nach der Analyse kannst du Rückfragen stellen\n"
             "4. Du erhältst einen Bericht zum Download"
         )
@@ -398,11 +435,34 @@ async def main(message: cl.Message) -> None:
     if message.elements:
         for el in message.elements:
             if hasattr(el, "path") and el.path:
-                msg = await cl.Message(content=f"Lade `{el.name}` hoch …").send()
-                try:
-                    record = _persist_upload(
-                        el.path, getattr(el, "name", None), session_dir
+                display_name = getattr(el, "name", None) or Path(el.path).name
+                if len(pending_files) >= MAX_PDF_COUNT:
+                    logger.info(
+                        "main: Upload von %s abgelehnt, PDF-Limit erreicht (%d/%d)",
+                        display_name,
+                        len(pending_files),
+                        MAX_PDF_COUNT,
                     )
+                    await cl.Message(
+                        content=(
+                            f"❌ Maximal {MAX_PDF_COUNT} PDF-Dokumente pro Analyse sind "
+                            f"erlaubt. `{display_name}` wurde nicht übernommen."
+                        )
+                    ).send()
+                    continue
+                msg = await cl.Message(content=f"Lade `{display_name}` hoch …").send()
+                validation_error = _validate_pdf_upload(el.path, display_name)
+                if validation_error:
+                    logger.info(
+                        "main: Upload von %s abgelehnt: %s",
+                        display_name,
+                        validation_error,
+                    )
+                    msg.content = validation_error
+                    await msg.update()
+                    continue
+                try:
+                    record = _persist_upload(el.path, display_name, session_dir)
                     pending_files.append(record)
                     cl.user_session.set("pending_files", pending_files)
                     logger.info(
