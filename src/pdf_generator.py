@@ -57,7 +57,7 @@ def _fmt_rent_value(value) -> str:
     return str(value)
 
 
-def generate_markdown(json_data: dict) -> str:
+def generate_markdown(json_data: dict, elapsed_display: str | None = None) -> str:
     d = json_data
     address = d.get("property_address") or "–"
     logger.info("generate_markdown: erstelle Bericht fuer %s", address)
@@ -69,6 +69,10 @@ def generate_markdown(json_data: dict) -> str:
         f"# 🏠 Due Diligence Bericht",
         f"**Objekt:** {address}  ",
         f"**Erstellt:** {created_at}  ",
+    ]
+    if elapsed_display:
+        lines += [f"**Analysedauer:** {elapsed_display}  "]
+    lines += [
         f"**Gesamtrisiko:** {_badge(d.get('overall_risk_level', '–'))}",
         "",
         "---",

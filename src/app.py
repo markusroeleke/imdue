@@ -336,14 +336,20 @@ async def main(message: cl.Message) -> None:
             msg.content = "📄 Erstelle Bericht …"
             await msg.update()
 
-            json_path = session_dir / f"result_{uuid.uuid4().hex[:8]}.json"
+            json_path = session_dir / "result.json"
             json_path.write_text(
                 json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             logger.debug("main: JSON-Ergebnis gespeichert unter %s", json_path)
 
-            report_md = generate_markdown(result)
-            md_path = str(session_dir / f"report_{uuid.uuid4().hex[:8]}.md")
+            # Compute elapsed time BEFORE generating the report so it can be
+            # embedded in the report itself, not just mentioned in the chat.
+            elapsed_seconds = time.monotonic() - start_time
+            analysis_finished_at = datetime.now()
+            elapsed_display = _format_elapsed(elapsed_seconds)
+
+            report_md = generate_markdown(result, elapsed_display=elapsed_display)
+            md_path = str(session_dir / "report.md")
             save_report(report_md, md_path)
             logger.info("main: Bericht gespeichert unter %s", md_path)
 
@@ -351,10 +357,7 @@ async def main(message: cl.Message) -> None:
             high = [f for f in flags if f["severity"] in ["High", "Critical"]]
             score_obj = result.get("investment_score", {})
 
-            elapsed_seconds = time.monotonic() - start_time
-            analysis_finished_at = datetime.now()
-            elapsed_display = _format_elapsed(elapsed_seconds)
-            timing_path = session_dir / f"timing_{uuid.uuid4().hex[:8]}.json"
+            timing_path = session_dir / "timing.json"
             timing_path.write_text(
                 json.dumps(
                     {
@@ -404,7 +407,7 @@ async def main(message: cl.Message) -> None:
         except Exception as exc:
             _log_error("analysis failed", exc)
             elapsed_seconds = time.monotonic() - start_time
-            timing_path = session_dir / f"timing_{uuid.uuid4().hex[:8]}.json"
+            timing_path = session_dir / "timing.json"
             timing_path.write_text(
                 json.dumps(
                     {

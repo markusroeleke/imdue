@@ -123,35 +123,65 @@ def create_analysis_task(file_ids: list, schema: dict) -> str:
     )
     prompt = (
         "Du bist ein hochspezialisierter Immobilien-Due-Diligence-Experte für den deutschsprachigen Markt.\n"
-        "Führe folgende Analyseschritte für alle angehängten Maklerunterlagen durch:\n"
-        "Phase 0 (immer zuerst): Dokument-Inventarisierung - Dokumente klassifizieren, "
-        "Vollständigkeit prüfen, fehlende Kern- und Empfehlungsdokumente sowie Datenpunkte auflisten.\n"
-        "Phase 1 (direkt danach - so viele Schritte wie möglich gleichzeitig/parallel bearbeiten, "
-        "nicht nacheinander): "
-        "(a) Grundbuch- & Eigentumsanalyse: Eigentümerstruktur, Lasten, Grundschulden, Nießbrauch, "
-        "Wegerechte, Auflassungsvormerkungen; "
-        "(b) Mietvertrags- & Mieteranalyse: Mietverträge/Mieterliste, Mietniveau, Laufzeiten, "
-        "Index-/Staffelmietklauseln, Sonderkündigungsrechte, Leerstandsrisiko, Ist- vs. Sollmiete; "
-        "(c) Wirtschaftliche Kennzahlen: Kaufpreisfaktor, Brutto-/Nettomietrendite, Cashflow vor/nach "
-        "Finanzierung, Bewirtschaftungskostenquote, Break-Even-Vermietungsquote, Sensitivitätsszenarien, "
-        "Marktvergleich per Websuche; "
-        "(d) Technische & bauliche Prüfung: Mängel, Instandhaltungsrückstau, Energieausweis/"
-        "Effizienzklasse, GEG-Pflichten, Investitionskosten kurz-/mittel-/langfristig; "
-        "(e) WEG-Analyse (nur falls WEG-Unterlagen vorhanden): Hausgeld, Rücklagenangemessenheit, "
-        "geplante Sonderumlagen, Rechtsstreitigkeiten, Verwalterqualität; "
-        "(f) Standort- & Marktanalyse per Websuche: Makro-/Mikrolage, ÖPNV, Schulen, Kaufpreis/Miete "
+        "Erstelle zu Beginn eine Aufgabenliste (Plan) mit genau folgenden 10 Punkten in dieser "
+        "Reihenfolge und aktualisiere deren Status (offen/in Bearbeitung/erledigt) fortlaufend "
+        "während der Bearbeitung:\n"
+        "1. dd-skill-01-document-inventory: Dokument-Inventarisierung & Vollständigkeitsprüfung\n"
+        "2. dd-skill-02-grundbuch: Grundbuch- & Eigentumsanalyse\n"
+        "3. dd-skill-03-mietanalyse: Mietvertrags- & Mieteranalyse\n"
+        "4. dd-skill-04-finanzkennzahlen: Wirtschaftliche Kennzahlenberechnung\n"
+        "5. dd-skill-05-technisch: Technische & bauliche Prüfung\n"
+        "6. dd-skill-06-weg: WEG-Analyse\n"
+        "7. dd-skill-07-standort: Standort- & Marktanalyse\n"
+        "8. dd-skill-08-rechtlich: Rechtliche Risikoprüfung\n"
+        "9. dd-skill-09-risikoscore: Risikobewertung & Investment-Score\n"
+        "10. dd-skill-10-orchestrator: Finale Aggregation zum Gesamt-JSON\n"
+        "Führe anschließend folgende Analysephasen für alle angehängten Maklerunterlagen durch:\n"
+        "Phase 0 (Skill dd-skill-01-document-inventory, immer zuerst): Dokumente exakt nach Typ "
+        "klassifizieren (Grundbuchauszug, Mietvertrag/Mieterliste, Exposé, Energieausweis, "
+        "Teilungserklärung, WEG-Protokoll, WEG-Jahresabrechnung, Bauplan/Grundriss, Technisches "
+        "Gutachten, Kaufvertragsentwurf, Flurkarte, Altlastenauskunft, Sonstiges), Objektadresse "
+        "ermitteln, prüfen welche Kerndokumente (Grundbuchauszug, Mietvertrag/Mieterliste, Exposé, "
+        "Energieausweis, Kaufvertragsentwurf) und empfohlenen Dokumente (WEG-Protokolle der letzten "
+        "3 Jahre, WEG-Jahresabrechnung, Technisches Gutachten, Flurkarte/Lageplan, Altlastenauskunft) "
+        "fehlen, und für jeden Folgeschritt (a)-(g) festlegen, ob ausreichend Unterlagen für eine "
+        "sinnvolle Analyse vorliegen.\n"
+        "Phase 1 (Skills dd-skill-02 bis dd-skill-08, direkt danach - so viele Schritte wie möglich "
+        "gleichzeitig/parallel bearbeiten, nicht nacheinander):\n"
+        "(a) dd-skill-02-grundbuch: Eigentümerstruktur (Abt. I), Lasten und Beschränkungen (Abt. II: "
+        "Auflassungsvormerkungen, Wegerechte, Nießbrauch, Vorkaufsrechte, Erbbaurechte), "
+        "Grundpfandrechte (Abt. III: Grundschulden, Hypotheken, Rang);\n"
+        "(b) dd-skill-03-mietanalyse: Mietverträge/Mieterliste je Einheit, Mietniveau, "
+        "Vertragslaufzeiten, Index-/Staffelmietklauseln, Sonderkündigungsrechte, "
+        "Schönheitsreparaturklauseln, Leerstandsrisiko, Ist- vs. Sollmiete;\n"
+        "(c) dd-skill-04-finanzkennzahlen: Kaufpreisfaktor, Brutto-/Nettomietrendite, Cashflow vor/"
+        "nach Finanzierung, Bewirtschaftungskostenquote, Break-Even-Vermietungsquote, "
+        "Sensitivitätsszenarien (Basis/positiv/negativ), Marktvergleich per Websuche;\n"
+        "(d) dd-skill-05-technisch: Energieausweis/Effizienzklasse, GEG-Pflichten, Baumängel, "
+        "Instandhaltungsrückstau, Investitionskosten kurz-/mittel-/langfristig;\n"
+        "(e) dd-skill-06-weg (nur falls WEG-Unterlagen vorhanden): Hausgeld, "
+        "Rücklagenangemessenheit, geplante/beschlossene Sonderumlagen, Rechtsstreitigkeiten der WEG, "
+        "Verwalterqualität;\n"
+        "(f) dd-skill-07-standort per Websuche: Makro-/Mikrolage, ÖPNV, Schulen, Kaufpreis/Miete "
         "pro qm, Leerstandsquote, Hochwasserrisiko (ZÜRS-Zone), Milieuschutz, Standort-Score 1-5 - "
-        "diesen Schritt immer ausführen, unabhängig von Dokumentlage; "
-        "(g) Rechtliche Risikoprüfung: Kaufvertragsentwurf, mietrechtliche Klauseln "
-        "(Schönheitsreparaturen, Mietpreisbremse, Eigenbedarf), Baugenehmigungen, "
+        "diesen Schritt immer ausführen, unabhängig von Dokumentlage;\n"
+        "(g) dd-skill-08-rechtlich: Kaufvertragsentwurf, mietrechtliche Klauseln "
+        "(Schönheitsreparaturen, Mietpreisbremse, Eigenbedarf, § 577 BGB), Baugenehmigungen, "
         "Zweckentfremdungsverbot, Steuerhinweise (AfA, Denkmalschutz), Gewährleistungsausschlüsse.\n"
         "Überspringe einen Teilschritt aus Phase 1 nur, wenn die dafür nötigen Unterlagen vollständig "
         "fehlen (außer Standortanalyse (f), die immer läuft), und vermerke dies als offenen Punkt statt "
         "Informationen zu erfinden.\n"
-        "Phase 2 (erst nach Abschluss aller Phase-1-Schritte): Risikobewertung - alle Teilergebnisse zu "
-        "einem Investment-Score (0-100, mit Aufschlüsselung je Kategorie), einer sortierten "
-        "Red-Flag-Liste, Stärken/Schwächen und einer Kauf-Empfehlung "
-        "(Kaufen/Nachverhandeln/Abstand nehmen) aggregieren.\n"
+        "Phase 2 (Skill dd-skill-09-risikoscore, erst nach Abschluss aller Phase-1-Schritte): "
+        "Risikobewertung je Kategorie (Rechtlich, Wirtschaftlich, Technisch, Standort, Mietausfall) "
+        "mit Low/Medium/High/Critical; Investment-Score 0-100 nach Gewichtung Standort 20 / "
+        "Wirtschaftlichkeit 25 / Technik 20 / Rechtssicherheit 20 / WEG 10 / "
+        "Dokumentenvollständigkeit 5 Punkte; sortierte Red-Flag-Liste (Critical zuerst); Stärken/"
+        "Schwächen; Empfehlung Kaufen (Score ≥70, kein Critical-Risiko, KPIs marktgerecht) / "
+        "Nachverhandeln (Score 45-69 oder behebbare Risiken) / Abstand nehmen (Score <45, "
+        "Critical-Risiko oder fundamentale Datenlücken).\n"
+        "Phase 3 (Skill dd-skill-10-orchestrator, letzter Schritt): Alle Teilergebnisse aus den "
+        "Schritten 1-9 zu einem einzigen, in sich konsistenten Ergebnis im vorgegebenen Schema "
+        "zusammenführen.\n"
         "Arbeite so schnell wie möglich: bearbeite alle unabhängigen Analyseschritte aus Phase 1 "
         "parallel statt sequenziell, um die Gesamtlaufzeit zu minimieren.\n"
         "Wenn Informationen fehlen, erfinde nichts und liste sie als offene Punkte.\n"
@@ -233,18 +263,19 @@ def poll_for_followup_reply(task_id: str, retries: int = 6, delay: int = 5) -> s
 # The Due-Diligence steps executed by the backend within the single
 # consolidated analysis task (see the phase breakdown in the prompt built by
 # create_analysis_task: Phase 0 = doc inventory, Phase 1 (a)-(g) = the
-# parallel sub-analyses, Phase 2 = final risk score/recommendation
-# aggregation). Used to detect which processing step is currently active
-# from the free-text status/plan/tool events the backend reports, since
-# there is no dedicated "skill status" event. Keywords are kept in sync
-# with the wording used in that prompt so Manus's own plan/status text -
-# which tends to mirror the given instructions - matches reliably. Shared
-# between the per-step polling timeout below and the app's skill-progress
-# checklist shown to the user. Corresponds to skills 1-9 documented in
-# .github/skills/dd-skill-01 … dd-skill-09; skill 10 (orchestrator) is not
-# tracked separately since this task no longer runs a distinct
-# aggregation/report-generation call - the single task returns the final
-# JSON directly (see create_analysis_task's "JSON only, no PDF" instruction).
+# parallel sub-analyses, Phase 2 = risk score/recommendation aggregation,
+# Phase 3 = final JSON assembly). Used to detect which processing step is
+# currently active from the free-text status/plan/tool events the backend
+# reports, since there is no dedicated "skill status" event. Keywords are
+# kept in sync with the wording used in that prompt so Manus's own
+# plan/status text - which tends to mirror the given instructions - matches
+# reliably. Shared between the per-step polling timeout below and the app's
+# skill-progress checklist shown to the user. Corresponds to all 10 skills
+# documented in .github/skills/dd-skill-01 … dd-skill-10. The prompt built
+# by create_analysis_task explicitly asks Manus to create an upfront
+# todo/plan list naming all 10 skills (by their dd-skill-XX id), so
+# plan_update events reliably carry these ids even though this is a single
+# consolidated task rather than 10 separate task.create calls.
 SKILL_STEPS: list[tuple[str, str, tuple[str, ...]]] = [
     (
         "dd-skill-01-document-inventory",
@@ -307,6 +338,17 @@ SKILL_STEPS: list[tuple[str, str, tuple[str, ...]]] = [
             "red flag",
             "phase 2",
             "skill-09",
+        ),
+    ),
+    (
+        "dd-skill-10-orchestrator",
+        "Finale Aggregation zum Gesamt-JSON",
+        (
+            "orchestrator",
+            "finale aggregation",
+            "gesamt-json",
+            "phase 3",
+            "skill-10",
         ),
     ),
 ]
