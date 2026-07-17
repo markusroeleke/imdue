@@ -119,19 +119,42 @@ RISIKOBEWERTUNG & SCORE (Skill 9): {skill_09}
 
 Erstelle das finale JSON-Objekt:
 1. executive_summary: 2–3 präzise Sätze zu den wichtigsten 3–4 Erkenntnissen.
-2. completeness_check: Aus Skill 1.
+2. completeness_check: Aus Skill 1 — Felder `missing_core_documents`,
+   `missing_recommended_documents` und `missing_data_points` unverändert
+   übernehmen (Feldnamen exakt wie in Skill 1, NICHT umbenennen oder
+   zusammenführen).
 3. red_flags: Aus Skill 9, sortiert nach Schweregrad (Critical zuerst).
 4. risk_assessment: Aus Skill 9.
-5. financial_summary: Zusammenführung Skill 3 + Skill 4.
-6. kpis: Direkt aus Skill 4.
-7. legal_risks: Aggregiert aus Skills 2, 3 und 8.
+5. financial_summary: `current_rent_annual_eur` und
+   `estimated_market_rent_annual_eur` aus Skill 3 (Feld
+   `vacancy_rate_percent` ebenfalls aus Skill 3); `maintenance_backlog_notes`
+   aus Skill 5.
+6. kpis: Direkt aus Skill 4, inkl. `potential_rent_annual_eur`.
+7. legal_risks: Flache Liste von Strings, aggregiert aus Skill 8
+   (`all_legal_risks`), Skill 2 (`priority_risks`) und Skill 3 (alle
+   `problematic_clauses` je Mieteinheit). Keine Objekte, nur Strings.
 8. strengths / weaknesses: Aus Skill 9.
 9. open_questions: Aggregiert aus Skills 1–8 (alle offenen Fragen).
 10. investment_score: Aus Skill 9.
 11. recommendation: Aus Skill 9.
 12. overall_risk_level: Aus Skill 9.
-13. document_types_analyzed: Aus Skill 1.
+13. document_types_analyzed: Deduplizierte Liste der `document_type`-Werte
+    aus Skill 1s `documents[]`.
 14. property_address: Aus Skill 1.
+15. document_inventory: Direkt aus Skill 1 (`documents`,
+    `missing_core_documents`, `missing_recommended_documents`,
+    `overall_document_quality`, `inventory_notes`).
+16. grundbuch: Direkt aus Skill 2, oder `null` falls Skill 2 nicht
+    ausgeführt wurde.
+17. mietanalyse: Direkt aus Skill 3, oder `null` falls Skill 3 nicht
+    ausgeführt wurde.
+18. technical: Direkt aus Skill 5, oder `null` falls Skill 5 nicht
+    ausgeführt wurde.
+19. weg: Direkt aus Skill 6, oder `null` falls Skill 6 nicht ausgeführt
+    wurde.
+20. standort: Direkt aus Skill 7 (wird immer ausgeführt).
+21. legal: Direkt aus Skill 8, oder `null` falls Skill 8 nicht ausgeführt
+    wurde.
 
 Wenn ein Teilschritt nicht ausgeführt wurde, vermerke dies im betreffenden Feld.
 Fehlende Zahlenwerte als null, fehlende Texte als "Keine Daten vorhanden".
@@ -142,12 +165,21 @@ Erfinde keine Informationen.
 
 Das vollständige Schema ist in [../../src/schema.py](../../src/schema.py) definiert. Es enthält:
 - `property_address`, `document_types_analyzed`, `overall_risk_level`
-- `executive_summary`, `completeness_check`, `red_flags`
+- `executive_summary`, `completeness_check` (`missing_core_documents`,
+  `missing_recommended_documents`, `missing_data_points`), `red_flags`
 - `risk_assessment` (legal, financial, technical, location, tenant_default)
-- `financial_summary` (current_rent, market_rent, vacancy_risk, maintenance_backlog)
-- `kpis` (price_per_sqm, rent_multiplier, gross/net yield, cashflow, operating_cost_ratio)
-- `legal_risks`, `strengths`, `weaknesses`, `open_questions`
+- `financial_summary` (`current_rent_annual_eur`,
+  `estimated_market_rent_annual_eur`, `vacancy_rate_percent`,
+  `maintenance_backlog_notes`)
+- `kpis` (`price_per_sqm_eur`, `potential_rent_annual_eur`,
+  `rent_multiplier`, `gross_yield_percent`/`net_yield_percent`, cashflow,
+  `operating_cost_ratio_percent`)
+- `legal_risks` (flache Liste von Strings), `strengths`, `weaknesses`,
+  `open_questions`
 - `investment_score` (score 0–100, classification, explanation)
 - `recommendation` (Kaufen/Nachverhandeln/Abstand nehmen)
+- Detaillierte Passthrough-Sektionen je Skill: `document_inventory`,
+  `grundbuch`, `mietanalyse`, `technical`, `weg`, `standort`, `legal`
+  (jeweils `null`, wenn der zugehörige Skill nicht ausgeführt wurde)
 
 All fields with `additionalProperties: false` and strict enum/null typing.

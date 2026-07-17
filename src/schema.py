@@ -28,6 +28,7 @@ def _risk_level_field() -> dict:
 _document_entry_schema = {
     "type": "object",
     "properties": {
+        "file_id": {"type": "string"},
         "file_name": {"type": "string"},
         "document_type": {"type": "string"},
         "page_count": {"type": ["integer", "null"]},
@@ -39,6 +40,7 @@ _document_entry_schema = {
         "notes": {"type": "string"},
     },
     "required": [
+        "file_id",
         "file_name",
         "document_type",
         "page_count",
@@ -584,10 +586,21 @@ DUE_DILIGENCE_SCHEMA = {
         "completeness_check": {
             "type": "object",
             "properties": {
-                "missing_documents": {"type": "array", "items": {"type": "string"}},
+                "missing_core_documents": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "missing_recommended_documents": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
                 "missing_data_points": {"type": "array", "items": {"type": "string"}},
             },
-            "required": ["missing_documents", "missing_data_points"],
+            "required": [
+                "missing_core_documents",
+                "missing_recommended_documents",
+                "missing_data_points",
+            ],
             "additionalProperties": False,
         },
         "red_flags": {
@@ -633,13 +646,13 @@ DUE_DILIGENCE_SCHEMA = {
             "properties": {
                 "current_rent_annual_eur": {"type": ["number", "null"]},
                 "estimated_market_rent_annual_eur": {"type": ["number", "null"]},
-                "vacancy_risk_assessment": {"type": "string"},
+                "vacancy_rate_percent": {"type": ["number", "null"]},
                 "maintenance_backlog_notes": {"type": "string"},
             },
             "required": [
                 "current_rent_annual_eur",
                 "estimated_market_rent_annual_eur",
-                "vacancy_risk_assessment",
+                "vacancy_rate_percent",
                 "maintenance_backlog_notes",
             ],
             "additionalProperties": False,
@@ -652,6 +665,7 @@ DUE_DILIGENCE_SCHEMA = {
                 "price_per_sqm_eur": {"type": ["number", "null"]},
                 "market_price_per_sqm_eur": {"type": ["number", "null"]},
                 "price_vs_market_percent": {"type": ["number", "null"]},
+                "potential_rent_annual_eur": {"type": ["number", "null"]},
                 "rent_multiplier": {"type": ["number", "null"]},
                 "gross_yield_percent": {"type": ["number", "null"]},
                 "net_yield_percent": {"type": ["number", "null"]},
@@ -680,7 +694,6 @@ DUE_DILIGENCE_SCHEMA = {
                 },
                 "reserve_need_notes": {"type": "string"},
                 "assumptions_and_limitations": {"type": "string"},
-                "sensitivity_analysis_notes": {"type": "string"},
             },
             "required": [
                 "purchase_price_eur",
@@ -688,6 +701,7 @@ DUE_DILIGENCE_SCHEMA = {
                 "price_per_sqm_eur",
                 "market_price_per_sqm_eur",
                 "price_vs_market_percent",
+                "potential_rent_annual_eur",
                 "rent_multiplier",
                 "gross_yield_percent",
                 "net_yield_percent",
@@ -701,7 +715,6 @@ DUE_DILIGENCE_SCHEMA = {
                 "sensitivity_scenarios",
                 "reserve_need_notes",
                 "assumptions_and_limitations",
-                "sensitivity_analysis_notes",
             ],
             "additionalProperties": False,
         },

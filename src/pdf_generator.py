@@ -12,7 +12,49 @@ def _badge(level: str) -> str:
 
 
 def _fmt(val, suffix: str = "") -> str:
-    return f"{val:,.2f}{suffix}" if val is not None else "–"
+    if val is None:
+        return "–"
+    if isinstance(val, (int, float)):
+        return f"{val:,.2f}{suffix}"
+    return str(val)
+
+
+def _first(source: dict, *keys):
+    """Return the first present, non-None value among candidate keys.
+
+    Tolerates schema drift where the backend occasionally returns a
+    slightly different field name for the same value (e.g. 'gross_yield_pct'
+    instead of 'gross_yield_percent').
+    """
+    for key in keys:
+        val = source.get(key)
+        if val is not None:
+            return val
+    return None
+
+
+def _fmt_rent_value(value) -> str:
+    """Render a rent/income value that may be a plain number, a free-text
+    description, or a nested dict ({monthly_eur, annual_eur, per_sqm_eur, notes})."""
+    if value is None:
+        return "–"
+    if isinstance(value, (int, float)):
+        return _fmt(value, " €/Jahr")
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        parts = []
+        if value.get("annual_eur") is not None:
+            parts.append(_fmt(value["annual_eur"], " €/Jahr"))
+        if value.get("monthly_eur") is not None:
+            parts.append(_fmt(value["monthly_eur"], " €/Monat"))
+        if value.get("per_sqm_eur") is not None:
+            parts.append(f"{_fmt(value['per_sqm_eur'], ' €/m²')}")
+        text = ", ".join(parts) if parts else "–"
+        if value.get("notes"):
+            text += f" – {value['notes']}"
+        return text
+    return str(value)
 
 
 def generate_markdown(json_data: dict) -> str:
@@ -37,8 +79,14 @@ def generate_markdown(json_data: dict) -> str:
     lines += ["## 📋 Executive Summary", "", d.get("executive_summary", "–"), ""]
 
     # Vollständigkeit
-    cc = d.get("completeness_check", {})
-    missing_docs = cc.get("missing_documents", [])
+    cc = d.get("completeness_check") or {}
+    # Canonical schema fields (matching Skill 1's own field names).
+    missing_docs = (cc.get("missing_core_documents") or []) + (
+        cc.get("missing_recommended_documents") or []
+    )
+    if not missing_docs:
+        # Legacy backend runs used a single flat 'missing_documents' field.
+        missing_docs = cc.get("missing_documents") or []
     missing_pts = cc.get("missing_data_points", [])
     lines += ["## ✅ Vollständigkeitsprüfung", ""]
     if missing_docs:
@@ -54,6 +102,10 @@ def generate_markdown(json_data: dict) -> str:
 
     # Dokumenteninventar (Skill 1)
     inv = d.get("document_inventory")
+    if not inv and cc.get("documents") is not None:
+        # Some backend runs nest the Skill-1 inventory inside
+        # completeness_check instead of the dedicated top-level field.
+        inv = cc
     if inv:
         lines += ["## 🗂️ Dokumenteninventar", ""]
         if inv.get("overall_document_quality"):
@@ -83,6 +135,31 @@ def generate_markdown(json_data: dict) -> str:
         if inv.get("inventory_notes"):
             lines += [f"*{inv['inventory_notes']}*", ""]
 
+    # Wirtschaftliche Zusammenfassung
+    fs = d.get("financial_summary")
+    if fs:
+        current_rent = _first(fs, "current_rent_annual_eur", "current_rent")
+        market_rent = _first(fs, "estimated_market_rent_annual_eur", "market_rent")
+        vacancy_rate = _first(fs, "vacancy_rate_percent")
+        # Older backend runs returned a free-text assessment instead of a rate.
+        vacancy_risk = _first(fs, "vacancy_risk_assessment", "vacancy_risk")
+        maintenance_backlog = _first(
+            fs, "maintenance_backlog_notes", "maintenance_backlog"
+        )
+        lines += [
+            "## 💰 Wirtschaftliche Zusammenfassung",
+            "",
+            f"**Ist-Miete:** {_fmt_rent_value(current_rent)}  ",
+            f"**Marktmiete:** {_fmt_rent_value(market_rent)}",
+            "",
+        ]
+        if vacancy_rate is not None:
+            lines += [f"**Leerstandsquote:** {fmt(vacancy_rate, ' %')}", ""]
+        elif vacancy_risk:
+            lines += [f"**Leerstandsrisiko:** {vacancy_risk}", ""]
+        if maintenance_backlog:
+            lines += [f"**Instandhaltungsrückstau:** {maintenance_backlog}", ""]
+
     # KPIs
     kpis = d.get("kpis", {})
 
@@ -91,37 +168,66 @@ def generate_markdown(json_data: dict) -> str:
         "",
         "| Kennzahl | Wert |",
         "| :--- | ---: |",
-        f"| Kaufpreis | {fmt(kpis.get('purchase_price_eur'), ' €')} |",
-        f"| Wohn-/Nutzfläche | {fmt(kpis.get('total_area_sqm'), ' m²')} |",
-        f"| Kaufpreis pro m² | {fmt(kpis.get('price_per_sqm_eur'), ' €')} |",
-        f"| Marktpreis pro m² | {fmt(kpis.get('market_price_per_sqm_eur'), ' €')} |",
-        f"| Abweichung vom Marktpreis | {fmt(kpis.get('price_vs_market_percent'), ' %')} |",
-        f"| Kaufpreisfaktor | {fmt(kpis.get('rent_multiplier'), 'x')} |",
-        f"| Bruttomietrendite | {fmt(kpis.get('gross_yield_percent'), ' %')} |",
-        f"| Nettomietrendite | {fmt(kpis.get('net_yield_percent'), ' %')} |",
-        f"| Erwerbsnebenkosten | {fmt(kpis.get('acquisition_costs_total_eur'), ' €')} |",
-        f"| Betriebskosten p.a. | {fmt(kpis.get('operating_costs_annual_eur'), ' €')} |",
-        f"| Instandhaltungsrücklage p.a. | {fmt(kpis.get('maintenance_reserve_annual_eur'), ' €')} |",
-        f"| Cashflow vor Finanzierung | {fmt(kpis.get('cashflow_pre_financing_eur'), ' €/J')} |",
-        f"| Cashflow nach Finanzierung | {fmt(kpis.get('cashflow_post_financing_eur'), ' €/J')} |",
-        f"| Betriebskostenquote | {fmt(kpis.get('operating_cost_ratio_percent'), ' %')} |",
-        f"| Break-Even-Vermietungsquote | {fmt(kpis.get('break_even_occupancy_percent'), ' %')} |",
+        f"| Kaufpreis | {fmt(_first(kpis, 'purchase_price_eur'), ' €')} |",
+        f"| Wohn-/Nutzfläche | {fmt(_first(kpis, 'total_area_sqm'), ' m²')} |",
+        f"| Kaufpreis pro m² | {fmt(_first(kpis, 'price_per_sqm_eur', 'price_per_sqm'), ' €')} |",
+        f"| Marktpreis pro m² | {fmt(_first(kpis, 'market_price_per_sqm_eur'), ' €')} |",
+        f"| Abweichung vom Marktpreis | {fmt(_first(kpis, 'price_vs_market_percent'), ' %')} |",
+        f"| Potenzielle Jahresmiete | {fmt(_first(kpis, 'potential_rent_annual_eur'), ' €')} |",
+        f"| Kaufpreisfaktor | {fmt(_first(kpis, 'rent_multiplier'), 'x')} |",
+        f"| Bruttomietrendite | {fmt(_first(kpis, 'gross_yield_percent', 'gross_yield_pct'), ' %')} |",
+        f"| Nettomietrendite | {fmt(_first(kpis, 'net_yield_percent', 'net_yield_pct'), ' %')} |",
+        f"| Erwerbsnebenkosten | {fmt(_first(kpis, 'acquisition_costs_total_eur'), ' €')} |",
+        f"| Betriebskosten p.a. | {fmt(_first(kpis, 'operating_costs_annual_eur'), ' €')} |",
+        f"| Instandhaltungsrücklage p.a. | {fmt(_first(kpis, 'maintenance_reserve_annual_eur'), ' €')} |",
+        f"| Cashflow vor Finanzierung | {fmt(_first(kpis, 'cashflow_pre_financing_eur', 'cashflow_before_financing_eur'), ' €/J')} |",
+        f"| Cashflow nach Finanzierung | {fmt(_first(kpis, 'cashflow_post_financing_eur', 'cashflow_after_financing_eur'), ' €/J')} |",
+        f"| Betriebskostenquote | {fmt(_first(kpis, 'operating_cost_ratio_percent', 'operating_cost_ratio_pct'), ' %')} |",
+        f"| Break-Even-Vermietungsquote | {fmt(_first(kpis, 'break_even_occupancy_percent', 'break_even_occupancy_pct'), ' %')} |",
         "",
     ]
     scenarios = kpis.get("sensitivity_scenarios")
-    if scenarios:
-        lines += [
-            "**Sensitivitätsszenarien (Cashflow):**",
-            "",
-            "| Szenario | Cashflow |",
-            "| :--- | ---: |",
-            f"| Positiv | {fmt(scenarios.get('optimistic_cashflow_eur'), ' €/J')} |",
-            f"| Basis | {fmt(scenarios.get('base_case_cashflow_eur'), ' €/J')} |",
-            f"| Negativ | {fmt(scenarios.get('pessimistic_cashflow_eur'), ' €/J')} |",
-            "",
-        ]
-        if scenarios.get("sensitivity_notes"):
-            lines += [f"*{scenarios['sensitivity_notes']}*", ""]
+    if isinstance(scenarios, dict) and scenarios:
+        known_scenario_keys = {
+            "base_case_cashflow_eur",
+            "optimistic_cashflow_eur",
+            "pessimistic_cashflow_eur",
+        }
+        if known_scenario_keys & scenarios.keys():
+            lines += [
+                "**Sensitivitätsszenarien (Cashflow):**",
+                "",
+                "| Szenario | Cashflow |",
+                "| :--- | ---: |",
+                f"| Positiv | {fmt(scenarios.get('optimistic_cashflow_eur'), ' €/J')} |",
+                f"| Basis | {fmt(scenarios.get('base_case_cashflow_eur'), ' €/J')} |",
+                f"| Negativ | {fmt(scenarios.get('pessimistic_cashflow_eur'), ' €/J')} |",
+                "",
+            ]
+            if scenarios.get("sensitivity_notes"):
+                lines += [f"*{scenarios['sensitivity_notes']}*", ""]
+        else:
+            # Alternate shape: dict of freely named scenarios, each with its
+            # own nested metrics (e.g. 'optimistisch_70pct_auslastung': {...}).
+            lines += [
+                "**Sensitivitätsszenarien:**",
+                "",
+                "| Szenario | Jahresmiete | Bruttorendite | Nettorendite | Cashflow vor Fin. | Cashflow nach Fin. |",
+                "| :--- | ---: | ---: | ---: | ---: | ---: |",
+            ]
+            for name, metrics in scenarios.items():
+                if not isinstance(metrics, dict):
+                    continue
+                label = name.replace("_", " ").capitalize()
+                lines.append(
+                    f"| {label} | "
+                    f"{fmt(_first(metrics, 'jahresmiete_brutto_eur'), ' €')} | "
+                    f"{fmt(_first(metrics, 'bruttomietrendite_pct'), ' %')} | "
+                    f"{fmt(_first(metrics, 'nettomietrendite_pct'), ' %')} | "
+                    f"{fmt(_first(metrics, 'cashflow_vor_finanzierung_eur'), ' €')} | "
+                    f"{fmt(_first(metrics, 'cashflow_nach_finanzierung_eur'), ' €')} |"
+                )
+            lines += [""]
     if kpis.get("reserve_need_notes"):
         lines += [f"**Rücklage:** {kpis['reserve_need_notes']}", ""]
     if kpis.get("assumptions_and_limitations"):
@@ -130,7 +236,11 @@ def generate_markdown(json_data: dict) -> str:
             "",
         ]
     if kpis.get("sensitivity_analysis_notes"):
+        # Legacy field name (removed from schema; kept as fallback for
+        # older captured outputs that still used it).
         lines += [f"**Sensitivität:** {kpis['sensitivity_analysis_notes']}", ""]
+    if kpis.get("kpi_notes"):
+        lines += [f"**Hinweise:** {kpis['kpi_notes']}", ""]
 
     # Risikoanalyse
     ra = d.get("risk_assessment", {})
@@ -464,6 +574,12 @@ def generate_markdown(json_data: dict) -> str:
 
     # Rechtliche Risikoprüfung - Detail (Skill 8)
     legal_detail = d.get("legal")
+    legal_risks = d.get("legal_risks")
+    if legal_detail is None and isinstance(legal_risks, dict):
+        # Some backend runs place the full Skill-8 detail object under
+        # 'legal_risks' instead of the dedicated 'legal' field.
+        legal_detail = legal_risks
+        legal_risks = legal_detail.get("all_legal_risks", [])
     if legal_detail:
         lines += ["## ⚖️ Rechtliche Risikoprüfung (Detail)", ""]
         pc_risks = legal_detail.get("purchase_contract_risks", [])
@@ -513,10 +629,18 @@ def generate_markdown(json_data: dict) -> str:
             lines += [f"*{legal_detail['legal_notes']}*", ""]
 
     # Zusammenfassung rechtlicher Risiken (aggregiert aus Skills 2, 3, 8)
-    legal_risks = d.get("legal_risks", [])
     if legal_risks:
         lines += ["## ⚖️ Zusammenfassung rechtlicher Risiken", ""]
-        lines += [f"- {r}" for r in legal_risks]
+        for r in legal_risks:
+            if isinstance(r, dict):
+                severity = r.get("severity")
+                label = r.get("category") or r.get("type") or r.get("clause")
+                desc = r.get("description") or r.get("recommendation") or ""
+                prefix = f"**[{severity}]** " if severity else ""
+                label_part = f"{label}: " if label else ""
+                lines.append(f"- {prefix}{label_part}{desc}")
+            else:
+                lines.append(f"- {r}")
         lines += [""]
 
     # Stärken / Schwächen
