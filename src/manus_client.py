@@ -497,12 +497,29 @@ def poll_for_result(
     poll_count = 0
     while True:
         poll_count += 1
-        events = list_task_messages(task_id, limit=50, verbose=True)
-        logger.debug(
-            "poll_for_result: Poll #%d, %d Event(s) erhalten", poll_count, len(events)
-        )
-        if events:
-            overall_last_activity = time.time()
+        try:
+            events = list_task_messages(task_id, limit=50, verbose=True)
+        except requests.exceptions.RequestException as exc:
+            # list_task_messages already retries transient network errors
+            # internally; if it still fails, treat this single poll as
+            # empty (instead of aborting the whole - possibly already
+            # finished-on-Manus's-side - analysis) and just try again on the
+            # next iteration, bounded by the regular inactivity timeout.
+            logger.warning(
+                "poll_for_result: Netzwerkfehler beim Abrufen von Task %s (Poll #%d): %s",
+                task_id,
+                poll_count,
+                exc,
+            )
+            events = []
+        else:
+            logger.debug(
+                "poll_for_result: Poll #%d, %d Event(s) erhalten",
+                poll_count,
+                len(events),
+            )
+            if events:
+                overall_last_activity = time.time()
         # Process oldest -> newest so the final agent_status/stopped_at
         # reflect the *latest* known state (list_task_messages defaults to
         # newest-first order).
@@ -658,13 +675,37 @@ def list_task_messages(
     if verbose:
         params["verbose"] = "true"
     for attempt in range(retries):
-        res = requests.get(
-            f"{MANUS_API_URL}/task.listMessages",
-            headers=_headers(),
-            params=params,
-            timeout=30,
-            verify=_ssl_verify(),
-        )
+        try:
+            res = requests.get(
+                f"{MANUS_API_URL}/task.listMessages",
+                headers=_headers(),
+                params=params,
+                timeout=30,
+                verify=_ssl_verify(),
+            )
+        except requests.exceptions.RequestException as exc:
+            # Transient network blips (read timeouts, SSL handshake
+            # timeouts, connection resets, ...) happen occasionally during
+            # long-running polls and must not abort an otherwise healthy
+            # (possibly already-finished-on-Manus's-side) analysis. Retry a
+            # few times with a short backoff before giving up.
+            if attempt < retries - 1:
+                logger.warning(
+                    "list_task_messages: Netzwerkfehler fuer Task %s (Versuch %d/%d): %s",
+                    task_id,
+                    attempt + 1,
+                    retries,
+                    exc,
+                )
+                time.sleep(delay)
+                continue
+            logger.error(
+                "list_task_messages: Netzwerkfehler fuer Task %s nach %d Versuchen: %s",
+                task_id,
+                retries,
+                exc,
+            )
+            raise
         if res.status_code == 404 and attempt < retries - 1:
             logger.debug(
                 "list_task_messages: Task %s noch nicht indexiert (404), Versuch %d/%d",

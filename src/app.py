@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import chainlit as cl
+import requests
 from dotenv import load_dotenv
 
 from src.logging_utils import (
@@ -293,7 +294,23 @@ async def stream_status_updates(
     try:
         while True:
             poll_count += 1
-            events = await run_sync(loop, list_task_messages, task_id, 30, "desc", True)
+            try:
+                events = await run_sync(
+                    loop, list_task_messages, task_id, 30, "desc", True
+                )
+            except requests.exceptions.RequestException as exc:
+                # A transient network blip here must not kill this
+                # fire-and-forget progress display (the actual analysis
+                # keeps polling independently via poll_for_result); just
+                # skip this refresh and try again on the next iteration.
+                logger.warning(
+                    "stream_status_updates: Netzwerkfehler fuer Task %s (Poll #%d): %s",
+                    task_id,
+                    poll_count,
+                    exc,
+                )
+                await asyncio.sleep(4)
+                continue
             logger.debug(
                 "stream_status_updates: Poll #%d fuer Task %s, %d Event(s)",
                 poll_count,
