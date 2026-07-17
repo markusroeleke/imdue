@@ -402,42 +402,61 @@ def _detect_step_progress(event: dict, log: bool = True) -> tuple[str | None, bo
     return None, False
 
 
-def poll_for_result(task_id: str, timeout: int = 1200) -> dict:
-    """Poll task.listMessages until a structured result appears.
+def poll_for_result(
+    task_id: str, timeout: int = 1200, extraction_timeout: int = 300
+) -> dict:
+    """Poll task.listMessages until a structured_output_result event appears.
 
-    `timeout` applies per processing step (skill), not to the task as a
-    whole: whenever a backend event can be attributed to one of the DD
-    skills (see SKILL_STEPS), that skill's own clock resets. A skill that
-    hasn't finished and shows no further event for `timeout` seconds is
-    considered stuck and raises TimeoutError. Since skills 2-8 run in
-    parallel and each gets its own budget, a long-running analysis (>10 min)
-    that keeps progressing through its skills is not cut off. Events that
-    cannot be attributed to a specific skill (e.g. before the first skill
-    starts) fall back to a plain inactivity timeout.
+    Follows the documented task lifecycle (see
+    https://open.manus.ai/docs/v2/task-lifecycle): the authoritative signal
+    is each `status_update` event's `agent_status` field, not skill/plan
+    heuristics:
+      - "running": the agent is working, keep polling.
+      - "stopped": the task itself finished; the structured_output_result is
+        produced by a separate, asynchronous extraction pass shortly
+        afterwards (see the Structured Output guide), so polling continues
+        with its own `extraction_timeout` budget instead of the general
+        inactivity `timeout`.
+      - "waiting": the agent needs input. If it is asking a question
+        (`waiting_for_event_type == "messageAskUser"`) it is nudged once to
+        continue autonomously, since this pipeline has no interactive user
+        in the loop; other waiting types are logged and bounded by the
+        regular inactivity `timeout`.
+      - "error": raises immediately with the reported error details.
+
+    Previously, progress was tracked per DD skill (see SKILL_STEPS) and a
+    skill with no matching event for `timeout` seconds was considered
+    stalled. That heuristic could raise a false-positive TimeoutError (e.g.
+    when a skill's plan step never matched our "done" keyword detection)
+    and abort polling *before* the task actually stopped and Manus produced
+    a structured result on its side - matching the reported symptom of "the
+    structured output was created on Manus's side but never retrieved".
+    Skill/plan progress is now only used for debug logging, never to decide
+    when to give up.
     """
-    skill_last_seen: dict[str, float] = {}
-    skill_done: set[str] = set()
     overall_last_activity = time.time()
+    stopped_at: float | None = None
+    nudged_waiting = False
     seen_event_ids: set[str] = set()
     logger.info(
-        "poll_for_result: starte Polling fuer Task %s (timeout=%ds/Schritt)",
+        "poll_for_result: starte Polling fuer Task %s (timeout=%ds, extraction_timeout=%ds)",
         task_id,
         timeout,
+        extraction_timeout,
     )
     poll_count = 0
     while True:
-        # Re-process every event returned on every poll (no id-based dedup):
-        # Manus reuses the same event id for a plan_update while mutating its
-        # `steps` statuses in place (a live snapshot, not a one-off delta), so
-        # skipping already-seen ids would freeze step progress at whatever
-        # state it had when first seen and could trigger false stalled-step
-        # timeouts even though the step is still actively progressing.
         poll_count += 1
         events = list_task_messages(task_id, limit=50, verbose=True)
         logger.debug(
             "poll_for_result: Poll #%d, %d Event(s) erhalten", poll_count, len(events)
         )
-        for e in events:
+        if events:
+            overall_last_activity = time.time()
+        # Process oldest -> newest so the final agent_status/stopped_at
+        # reflect the *latest* known state (list_task_messages defaults to
+        # newest-first order).
+        for e in reversed(events):
             result = _extract_structured_output(e)
             if result is not None:
                 logger.info(
@@ -445,55 +464,94 @@ def poll_for_result(task_id: str, timeout: int = 1200) -> dict:
                     task_id,
                 )
                 return result
-            if (
-                e.get("type") == "status_update"
-                and e.get("status_update", {}).get("agent_status") == "error"
-            ):
-                err_detail = e.get("status_update", {}).get("description", "")
-                logger.error(
-                    "poll_for_result: Task %s fehlgeschlagen: %s", task_id, err_detail
-                )
-                raise RuntimeError(f"Manus Task fehlgeschlagen: {err_detail}")
+
             # Only log for events not already seen on a previous poll: Manus
-            # re-sends the same plan_update event id on every poll while
-            # mutating its steps in place, so events must still be
-            # re-processed every time (to catch status changes) but should
-            # only be logged once to avoid log spam.
+            # re-sends the same plan_update/status_update event id on every
+            # poll while mutating it in place, so events must still be
+            # re-processed every time but should only be logged once.
             event_id = e.get("id")
             is_new_event = bool(event_id) and event_id not in seen_event_ids
             if event_id:
                 seen_event_ids.add(event_id)
-            step_id, step_done = _detect_step_progress(e, log=is_new_event)
-            if step_id:
-                skill_last_seen[step_id] = time.time()
-                if step_done:
-                    if step_id not in skill_done:
-                        logger.info(
-                            "poll_for_result: Schritt '%s' abgeschlossen", step_id
+            # Kept only for debug visibility into which skill is currently
+            # active; must never influence the timeout/stop decisions below.
+            step_id, _ = _detect_step_progress(e, log=is_new_event)
+            if step_id and is_new_event:
+                logger.debug("poll_for_result: Aktivitaet fuer Schritt '%s'", step_id)
+
+            if e.get("type") != "status_update":
+                continue
+            status_info = e.get("status_update", {}) or {}
+            agent_status = status_info.get("agent_status")
+
+            if agent_status == "error":
+                err_detail = status_info.get("description", "")
+                logger.error(
+                    "poll_for_result: Task %s fehlgeschlagen: %s", task_id, err_detail
+                )
+                raise RuntimeError(f"Manus Task fehlgeschlagen: {err_detail}")
+
+            if agent_status == "stopped":
+                if stopped_at is None:
+                    stopped_at = time.time()
+                    logger.info(
+                        "poll_for_result: Task %s gestoppt, warte auf strukturiertes "
+                        "Ergebnis (max. %ds)",
+                        task_id,
+                        extraction_timeout,
+                    )
+                continue
+
+            if agent_status == "waiting":
+                detail = status_info.get("status_detail", {}) or {}
+                waiting_for = detail.get("waiting_for_event_type")
+                description = detail.get("waiting_description") or status_info.get(
+                    "description", ""
+                )
+                if waiting_for == "messageAskUser":
+                    if is_new_event and not nudged_waiting:
+                        logger.warning(
+                            "poll_for_result: Task %s wartet auf Nutzerantwort (%s), "
+                            "fordere eigenstaendige Fortsetzung an",
+                            task_id,
+                            description,
                         )
-                    skill_done.add(step_id)
-            else:
-                overall_last_activity = time.time()
+                        send_followup_message(
+                            task_id,
+                            "Bitte triff eine plausible Annahme und setze die Analyse "
+                            "eigenständig fort, ohne auf eine Nutzerantwort zu warten. "
+                            "Vermerke offene Fragen stattdessen als offenen Punkt im "
+                            "Ergebnis.",
+                        )
+                        nudged_waiting = True
+                elif is_new_event:
+                    logger.warning(
+                        "poll_for_result: Task %s wartet auf Bestaetigung (%s): %s",
+                        task_id,
+                        waiting_for,
+                        description,
+                    )
+                continue
+
+            # agent_status == "running" (or an unrecognized value): the task
+            # is active again, so any earlier "stopped" sighting no longer
+            # applies (extraction can only start after the *latest* stop).
+            stopped_at = None
+            nudged_waiting = False
 
         now = time.time()
-        stalled_step = next(
-            (
-                sid
-                for sid, last_seen in skill_last_seen.items()
-                if sid not in skill_done and now - last_seen >= timeout
-            ),
-            None,
-        )
-        if stalled_step:
+        if stopped_at is not None and now - stopped_at >= extraction_timeout:
             logger.error(
-                "poll_for_result: Schritt '%s' ohne Fortschritt seit %ds, breche ab",
-                stalled_step,
-                timeout,
+                "poll_for_result: Task %s gestoppt, aber kein strukturiertes Ergebnis "
+                "nach %ds erhalten",
+                task_id,
+                extraction_timeout,
             )
             raise TimeoutError(
-                f"Task {task_id}: Schritt '{stalled_step}' ohne Fortschritt seit {timeout}s."
+                f"Task {task_id}: gestoppt, aber kein strukturiertes Ergebnis nach "
+                f"{extraction_timeout}s erhalten."
             )
-        if not skill_last_seen and now - overall_last_activity >= timeout:
+        if stopped_at is None and now - overall_last_activity >= timeout:
             logger.error(
                 "poll_for_result: Task %s Timeout nach %ds ohne Aktivitaet",
                 task_id,
