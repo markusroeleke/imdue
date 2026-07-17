@@ -45,6 +45,11 @@ GENERIC_ERROR_MESSAGE = "❌ Es ist ein Fehler aufgetreten. Bitte versuche es er
 GENERIC_UPLOAD_ERROR_MESSAGE = "❌ Upload fehlgeschlagen. Bitte versuche es erneut."
 REPORT_DOWNLOAD_ENABLED = False
 
+# Global cap on follow-up/Ergänzung turns per analysis, to bound the extra
+# Manus turns (cost/runtime) a single chat session can trigger after the
+# initial analysis. TODO: make this configurable (env var) if needed later.
+MAX_FOLLOWUP_QUESTIONS = 3
+
 
 def _log_error(context: str, exc: BaseException) -> None:
     """Log full exception details server-side only; never shown to the user."""
@@ -338,6 +343,7 @@ async def start() -> None:
     cl.user_session.set("session_dir", str(session_dir))
     cl.user_session.set("pending_files", [])
     cl.user_session.set("task_id", None)
+    cl.user_session.set("followup_count", 0)
     await cl.Message(
         content=(
             "## Willkommen bei der Immobilien Due Diligence KI\n\n"
@@ -490,7 +496,29 @@ async def main(message: cl.Message) -> None:
 
     # --- Nachfragen/Ergänzungen nach abgeschlossener Analyse ---
     if task_id:
-        logger.info("main: Nachfrage/Ergaenzung zu Task %s", task_id)
+        followup_count: int = cl.user_session.get("followup_count", 0)
+        if followup_count >= MAX_FOLLOWUP_QUESTIONS:
+            logger.info(
+                "main: Nachfrage-Limit erreicht fuer Task %s (%d/%d)",
+                task_id,
+                followup_count,
+                MAX_FOLLOWUP_QUESTIONS,
+            )
+            await cl.Message(
+                content=(
+                    f"ℹ️ Maximal {MAX_FOLLOWUP_QUESTIONS} Rückfragen/Ergänzungen pro "
+                    "Analyse sind aktuell möglich. Starte für weitere Fragen bitte "
+                    "eine neue Analyse."
+                )
+            ).send()
+            return
+        cl.user_session.set("followup_count", followup_count + 1)
+        logger.info(
+            "main: Nachfrage/Ergaenzung zu Task %s (%d/%d)",
+            task_id,
+            followup_count + 1,
+            MAX_FOLLOWUP_QUESTIONS,
+        )
         followup_start = time.monotonic()
         status_msg = await cl.Message(content="🔄 Verarbeite Ergänzung …").send()
         status_task = asyncio.create_task(
