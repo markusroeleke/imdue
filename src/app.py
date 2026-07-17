@@ -1,11 +1,13 @@
 import asyncio
 import functools
+import json
 import logging
 import re
 import shutil
 import sys
 import uuid
 from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
 
 # Ensure the project root is on sys.path when Chainlit loads this file directly
@@ -57,10 +59,8 @@ def _sanitize_backend_text(text: str) -> str:
 
 
 BASE_DIR = Path(__file__).parent.parent
-REPORTS_DIR = BASE_DIR / "reports"
-REPORTS_DIR.mkdir(exist_ok=True)
-UPLOAD_DIR = BASE_DIR / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+SESSIONS_DIR = BASE_DIR / "sessions"
+SESSIONS_DIR.mkdir(exist_ok=True)
 
 TRIGGER_WORDS = {
     "analyse",
@@ -72,22 +72,27 @@ TRIGGER_WORDS = {
 }
 
 
-def _persist_upload(temp_path: str, original_name: str | None) -> dict:
-    """Store user upload on disk until Manus analysis starts."""
+def _new_session_dir() -> Path:
+    """Create a fresh, uniquely named folder for one chat session.
+
+    Holds everything produced during that session - uploaded documents, the
+    generated report, and the raw JSON result from Manus - together in one
+    place.
+    """
+    session_id = f"{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}"
+    session_dir = SESSIONS_DIR / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    return session_dir
+
+
+def _persist_upload(temp_path: str, original_name: str | None, session_dir: Path) -> dict:
+    """Store user upload in the current chat session's folder."""
     source = Path(temp_path)
     display_name = original_name or source.name
     safe_name = Path(display_name).name
-    dest = UPLOAD_DIR / f"{uuid.uuid4().hex}_{safe_name}"
+    dest = session_dir / f"{uuid.uuid4().hex[:8]}_{safe_name}"
     shutil.copy2(source, dest)
     return {"name": safe_name, "path": str(dest)}
-
-
-def _cleanup_pending_files(pending_files: list[dict]) -> None:
-    for info in pending_files:
-        path = Path(info.get("path", ""))
-        with suppress(OSError):
-            if path.exists():
-                path.unlink()
 
 
 async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
@@ -187,6 +192,8 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
 
 @cl.on_chat_start
 async def start() -> None:
+    session_dir = _new_session_dir()
+    cl.user_session.set("session_dir", str(session_dir))
     cl.user_session.set("pending_files", [])
     cl.user_session.set("task_id", None)
     await cl.Message(
@@ -204,6 +211,7 @@ async def start() -> None:
 async def main(message: cl.Message) -> None:
     pending_files: list = cl.user_session.get("pending_files", [])
     task_id: str | None = cl.user_session.get("task_id")
+    session_dir = Path(cl.user_session.get("session_dir"))
 
     # --- Datei-Upload ---
     if message.elements:
@@ -211,7 +219,7 @@ async def main(message: cl.Message) -> None:
             if hasattr(el, "path") and el.path:
                 msg = await cl.Message(content=f"Lade `{el.name}` hoch …").send()
                 try:
-                    record = _persist_upload(el.path, getattr(el, "name", None))
+                    record = _persist_upload(el.path, getattr(el, "name", None), session_dir)
                     pending_files.append(record)
                     cl.user_session.set("pending_files", pending_files)
                     msg.content = f"✅ `{record['name']}` gespeichert ({len(pending_files)} Dokument(e) gesamt)."
@@ -265,8 +273,13 @@ async def main(message: cl.Message) -> None:
             msg.content = "📄 Erstelle Bericht …"
             await msg.update()
 
+            json_path = session_dir / f"result_{uuid.uuid4().hex[:8]}.json"
+            json_path.write_text(
+                json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
             report_md = generate_markdown(result)
-            md_path = str(REPORTS_DIR / f"report_{uuid.uuid4().hex[:8]}.md")
+            md_path = str(session_dir / f"report_{uuid.uuid4().hex[:8]}.md")
             save_report(report_md, md_path)
 
             flags = result.get("red_flags", [])
@@ -301,7 +314,6 @@ async def main(message: cl.Message) -> None:
             _log_error("analysis failed", exc)
             await cl.Message(content=GENERIC_ERROR_MESSAGE).send()
         else:
-            _cleanup_pending_files(pending_files)
             cl.user_session.set("pending_files", [])
         return
 

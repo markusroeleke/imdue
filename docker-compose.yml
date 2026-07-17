@@ -4,7 +4,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./reports:/app/reports
+      - ./sessions:/app/sessions
     env_file:
       - .env
     restart: unless-stopped

@@ -16,6 +16,10 @@ build/
 # Generated reports
 reports/*.pdf
 
+# Per-chat-session folders (uploads, reports, raw JSON results)
+sessions/*
+!sessions/.gitkeep
+
 # Database (Phase 2)
 *.db
 *.sqlite
