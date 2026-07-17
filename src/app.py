@@ -59,7 +59,7 @@ MAX_FOLLOWUP_QUESTIONS = 3
 # .chainlit/config.toml (accept/max_files), but re-checked here server-side
 # since that config can be bypassed (e.g. direct API calls, edited requests).
 MAX_PDF_COUNT = 3
-MAX_PDF_PAGES = 10
+MAX_PDF_PAGES = 20
 
 # Daily cap on new analyses (task.create calls) per client, to bound
 # Manus API cost/usage. There is no login/auth system (MVP spec: "anonyme
