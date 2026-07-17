@@ -1,10 +1,18 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_VERSION: ${GIT_VERSION:-unknown}
     ports:
-      - "8000:8000"
-    volumes:
-      - ./sessions:/app/sessions
+      - "${APP_PORT:-8060}:8060"
     env_file:
       - .env
+    environment:
+      - PORT=8060
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./sessions:/app/sessions
+      - ./reports:/app/reports
+      - ./uploads:/app/uploads
     restart: unless-stopped
