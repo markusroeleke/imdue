@@ -132,6 +132,7 @@ async def stream_status_updates(
     spinner = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
     idx = 0
     seen_ids: set[str] = set()
+    skill_ids = [sid for sid, _, _ in SKILL_STEPS]
     skill_status: dict[str, str] = {sid: "pending" for sid, _, _ in SKILL_STEPS}
     skill_label = {sid: label for sid, label, _ in SKILL_STEPS}
     milestones: list[str] = []
@@ -142,15 +143,26 @@ async def stream_status_updates(
         if not milestones or milestones[-1] != text:
             milestones.append(text)
 
-    def mark_running(skill_id: str) -> None:
-        if skill_status[skill_id] == "pending":
-            skill_status[skill_id] = "running"
-            note(f"🔄 Gestartet: {skill_label[skill_id]}")
-
     def mark_done(skill_id: str) -> None:
         if skill_status[skill_id] != "done":
             skill_status[skill_id] = "done"
             note(f"✅ Abgeschlossen: {skill_label[skill_id]}")
+        # Skill 9 (risk score) only starts once all prior skills (1-8) have
+        # actually finished on the backend (see the orchestration prompt in
+        # manus_client.create_analysis_task), so its start is a reliable
+        # signal that every preceding step is done - even if we missed/
+        # mismatched some of their individual "done" plan_update events.
+        if skill_id == "dd-skill-09-risikoscore":
+            for prev_id in skill_ids[: skill_ids.index(skill_id)]:
+                mark_done(prev_id)
+
+    def mark_running(skill_id: str) -> None:
+        if skill_status[skill_id] == "pending":
+            skill_status[skill_id] = "running"
+            note(f"🔄 Gestartet: {skill_label[skill_id]}")
+        if skill_id == "dd-skill-09-risikoscore":
+            for prev_id in skill_ids[: skill_ids.index(skill_id)]:
+                mark_done(prev_id)
 
     def apply_event(event: dict, log: bool = True) -> None:
         """Update skill_status/milestones from one backend event.

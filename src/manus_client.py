@@ -342,7 +342,7 @@ SKILL_STEPS: list[tuple[str, str, tuple[str, ...]]] = [
     ),
     (
         "dd-skill-10-orchestrator",
-        "Finale Aggregation zum Gesamt-JSON",
+        "Finale Zusammenfassung",
         (
             "orchestrator",
             "finale aggregation",
