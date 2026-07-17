@@ -8,7 +8,11 @@ import requests
 import urllib3
 from dotenv import load_dotenv
 
+from src.logging_utils import get_logger
+
 load_dotenv()
+
+logger = get_logger("manus_client")
 
 MANUS_API_URL = "https://api.manus.ai/v2"
 
@@ -21,8 +25,10 @@ def _ssl_verify() -> bool | str:
     """
     bundle = os.getenv("SSL_CA_BUNDLE", "").strip()
     if bundle:
+        logger.debug("Using custom SSL CA bundle: %s", bundle)
         return bundle
     if os.getenv("SSL_VERIFY", "true").lower() in ("false", "0", "no"):
+        logger.warning("SSL verification is disabled (SSL_VERIFY=false).")
         warnings.warn(
             "SSL verification is disabled (SSL_VERIFY=false). "
             "Only use this in trusted corporate networks.",
@@ -34,13 +40,16 @@ def _ssl_verify() -> bool | str:
 
 
 def _headers() -> dict:
+    # Never log the API key itself.
     api_key = os.getenv("MANUS_API_KEY")
     if not api_key:
+        logger.error("MANUS_API_KEY is not set.")
         raise EnvironmentError("MANUS_API_KEY is not set.")
     return {"x-manus-api-key": api_key, "Content-Type": "application/json"}
 
 
 def upload_file_to_manus(file_path: str, file_name: str) -> str:
+    logger.info("upload_file_to_manus: starte Upload fuer %s", file_name)
     # Use only the basename — no path separators that could cause a 400
     safe_name = Path(file_name).name or Path(file_path).name
     # API spec only accepts "filename" — no mime_type, no project_id
@@ -51,16 +60,33 @@ def upload_file_to_manus(file_path: str, file_name: str) -> str:
         timeout=30,
         verify=_ssl_verify(),
     )
+    logger.debug("file.upload response status=%s fuer %s", res.status_code, safe_name)
     if not res.ok:
+        logger.error(
+            "file.upload fehlgeschlagen (%s) fuer %s: %s",
+            res.status_code,
+            safe_name,
+            res.text,
+        )
         raise RuntimeError(
             f"file.upload fehlgeschlagen ({res.status_code}): {res.text}"
         )
     data = res.json()
     upload_url = data.get("upload_url")
     if not upload_url:
+        logger.error(
+            "file.upload lieferte keine upload_url fuer %s: %s", safe_name, data
+        )
         raise RuntimeError(f"file.upload lieferte keine upload_url: {data}")
     mime_type, _ = mimetypes.guess_type(safe_name)
     mime_type = mime_type or "application/octet-stream"
+    file_size = Path(file_path).stat().st_size
+    logger.debug(
+        "PUT-Upload fuer %s: mime_type=%s size=%d bytes",
+        safe_name,
+        mime_type,
+        file_size,
+    )
     with open(file_path, "rb") as f:
         put_res = requests.put(
             upload_url,
@@ -70,15 +96,31 @@ def upload_file_to_manus(file_path: str, file_name: str) -> str:
             verify=_ssl_verify(),
         )
         if not put_res.ok:
+            logger.error(
+                "PUT upload fehlgeschlagen (%s) fuer %s: %s",
+                put_res.status_code,
+                safe_name,
+                put_res.text,
+            )
             raise RuntimeError(
                 f"PUT upload fehlgeschlagen ({put_res.status_code}): {put_res.text}"
             )
-    return data["file"]["id"]
+    file_id = data["file"]["id"]
+    logger.info(
+        "upload_file_to_manus: %s erfolgreich hochgeladen, file_id=%s",
+        safe_name,
+        file_id,
+    )
+    return file_id
 
 
 def create_analysis_task(file_ids: list, schema: dict) -> str:
+    logger.info("create_analysis_task: erstelle Task fuer %d Datei(en)", len(file_ids))
     skill_ids = [s for s in os.getenv("MANUS_FORCE_SKILL_IDS", "").split(",") if s]
     project_id = os.getenv("MANUS_PROJECT_ID")
+    logger.debug(
+        "create_analysis_task: skill_ids=%s project_id=%s", skill_ids, project_id
+    )
     prompt = (
         "Du bist ein hochspezialisierter Immobilien-Due-Diligence-Experte für den deutschsprachigen Markt.\n"
         "Führe folgende Analyseschritte für alle angehängten Maklerunterlagen durch:\n"
@@ -136,18 +178,23 @@ def create_analysis_task(file_ids: list, schema: dict) -> str:
         timeout=30,
         verify=_ssl_verify(),
     )
+    logger.debug("task.create response status=%s", res.status_code)
     res.raise_for_status()
     data = res.json()
     task = data.get("task") or data.get("data", {}).get("task")
     if isinstance(task, dict) and "id" in task:
+        logger.info("create_analysis_task: Task erstellt, task_id=%s", task["id"])
         return task["id"]
     if "task_id" in data:
+        logger.info("create_analysis_task: Task erstellt, task_id=%s", data["task_id"])
         return data["task_id"]
+    logger.error("task.create Antwort enthaelt keine task_id: %s", data)
     raise RuntimeError(f"task.create Antwort enthaelt keine task_id: {data}")
 
 
 def send_followup_message(task_id: str, content: str) -> None:
     """Continue an existing task with a follow-up question (no structured output)."""
+    logger.info("send_followup_message: Task %s, %d Zeichen", task_id, len(content))
     res = requests.post(
         f"{MANUS_API_URL}/task.sendMessage",
         headers=_headers(),
@@ -155,17 +202,31 @@ def send_followup_message(task_id: str, content: str) -> None:
         timeout=30,
         verify=_ssl_verify(),
     )
+    logger.debug("task.sendMessage response status=%s", res.status_code)
     res.raise_for_status()
 
 
 def poll_for_followup_reply(task_id: str, retries: int = 6, delay: int = 5) -> str:
     """Return the latest assistant_message text for a follow-up turn."""
-    for _ in range(retries):
+    logger.info(
+        "poll_for_followup_reply: Task %s, retries=%d delay=%d", task_id, retries, delay
+    )
+    for attempt in range(retries):
         for event in list_task_messages(task_id, limit=10):
             if event.get("type") == "assistant_message":
                 # content is nested: event.assistant_message.content
+                logger.info(
+                    "poll_for_followup_reply: Antwort erhalten (Versuch %d)",
+                    attempt + 1,
+                )
                 return event.get("assistant_message", {}).get("content", "")
+        logger.debug(
+            "poll_for_followup_reply: keine Antwort im Versuch %d, warte %ds",
+            attempt + 1,
+            delay,
+        )
         time.sleep(delay)
+    logger.warning("poll_for_followup_reply: keine Antwort nach %d Versuchen", retries)
     return ""
 
 
@@ -256,6 +317,7 @@ def match_skill(text: str) -> str | None:
     text_lower = text.lower()
     for skill_id, _, keywords in SKILL_STEPS:
         if skill_id.lower() in text_lower or any(kw in text_lower for kw in keywords):
+            logger.debug("match_skill: %r -> %s", text, skill_id)
             return skill_id
     return None
 
@@ -267,7 +329,14 @@ def _detect_step_progress(event: dict) -> tuple[str | None, bool]:
         for step in (event.get("plan_update", {}) or {}).get("steps", []) or []:
             skill_id = match_skill(step.get("title", ""))
             if skill_id:
-                return skill_id, step.get("status") == "done"
+                done = step.get("status") == "done"
+                logger.debug(
+                    "_detect_step_progress: plan_update step=%r skill_id=%s done=%s",
+                    step.get("title"),
+                    skill_id,
+                    done,
+                )
+                return skill_id, done
         return None, False
     if etype == "tool_used":
         tool_info = event.get("tool_used", {}) or {}
@@ -280,7 +349,7 @@ def _detect_step_progress(event: dict) -> tuple[str | None, bool]:
     return None, False
 
 
-def poll_for_result(task_id: str, timeout: int = 600) -> dict:
+def poll_for_result(task_id: str, timeout: int = 1200) -> dict:
     """Poll task.listMessages until a structured result appears.
 
     `timeout` applies per processing step (skill), not to the task as a
@@ -296,6 +365,12 @@ def poll_for_result(task_id: str, timeout: int = 600) -> dict:
     skill_last_seen: dict[str, float] = {}
     skill_done: set[str] = set()
     overall_last_activity = time.time()
+    logger.info(
+        "poll_for_result: starte Polling fuer Task %s (timeout=%ds/Schritt)",
+        task_id,
+        timeout,
+    )
+    poll_count = 0
     while True:
         # Re-process every event returned on every poll (no id-based dedup):
         # Manus reuses the same event id for a plan_update while mutating its
@@ -303,21 +378,36 @@ def poll_for_result(task_id: str, timeout: int = 600) -> dict:
         # skipping already-seen ids would freeze step progress at whatever
         # state it had when first seen and could trigger false stalled-step
         # timeouts even though the step is still actively progressing.
+        poll_count += 1
         events = list_task_messages(task_id, limit=50, verbose=True)
+        logger.debug(
+            "poll_for_result: Poll #%d, %d Event(s) erhalten", poll_count, len(events)
+        )
         for e in events:
             result = _extract_structured_output(e)
             if result is not None:
+                logger.info(
+                    "poll_for_result: strukturiertes Ergebnis erhalten fuer Task %s",
+                    task_id,
+                )
                 return result
             if (
                 e.get("type") == "status_update"
                 and e.get("status_update", {}).get("agent_status") == "error"
             ):
                 err_detail = e.get("status_update", {}).get("description", "")
+                logger.error(
+                    "poll_for_result: Task %s fehlgeschlagen: %s", task_id, err_detail
+                )
                 raise RuntimeError(f"Manus Task fehlgeschlagen: {err_detail}")
             step_id, step_done = _detect_step_progress(e)
             if step_id:
                 skill_last_seen[step_id] = time.time()
                 if step_done:
+                    if step_id not in skill_done:
+                        logger.info(
+                            "poll_for_result: Schritt '%s' abgeschlossen", step_id
+                        )
                     skill_done.add(step_id)
             else:
                 overall_last_activity = time.time()
@@ -332,10 +422,20 @@ def poll_for_result(task_id: str, timeout: int = 600) -> dict:
             None,
         )
         if stalled_step:
+            logger.error(
+                "poll_for_result: Schritt '%s' ohne Fortschritt seit %ds, breche ab",
+                stalled_step,
+                timeout,
+            )
             raise TimeoutError(
                 f"Task {task_id}: Schritt '{stalled_step}' ohne Fortschritt seit {timeout}s."
             )
         if not skill_last_seen and now - overall_last_activity >= timeout:
+            logger.error(
+                "poll_for_result: Task %s Timeout nach %ds ohne Aktivitaet",
+                task_id,
+                timeout,
+            )
             raise TimeoutError(
                 f"Task {task_id} Timeout nach {timeout}s ohne Aktivität."
             )
@@ -343,6 +443,7 @@ def poll_for_result(task_id: str, timeout: int = 600) -> dict:
 
 
 def get_available_skills(project_id: str | None = None) -> list:
+    logger.info("get_available_skills: project_id=%s", project_id)
     params: dict = {}
     if project_id:
         params["project_id"] = project_id
@@ -354,7 +455,9 @@ def get_available_skills(project_id: str | None = None) -> list:
         verify=_ssl_verify(),
     )
     res.raise_for_status()
-    return res.json().get("data", [])
+    skills = res.json().get("data", [])
+    logger.debug("get_available_skills: %d Skill(s) erhalten", len(skills))
+    return skills
 
 
 def list_task_messages(
@@ -387,12 +490,31 @@ def list_task_messages(
             verify=_ssl_verify(),
         )
         if res.status_code == 404 and attempt < retries - 1:
+            logger.debug(
+                "list_task_messages: Task %s noch nicht indexiert (404), Versuch %d/%d",
+                task_id,
+                attempt + 1,
+                retries,
+            )
             time.sleep(delay)
             continue
         res.raise_for_status()
         # API returns key "messages", not "data"
         body = res.json()
-        return body.get("messages") or body.get("data") or []
+        messages = body.get("messages") or body.get("data") or []
+        logger.debug(
+            "list_task_messages: Task %s -> %d Event(s) (limit=%d, verbose=%s)",
+            task_id,
+            len(messages),
+            limit,
+            verbose,
+        )
+        return messages
+    logger.warning(
+        "list_task_messages: Task %s nach %d Versuchen nicht erreichbar",
+        task_id,
+        retries,
+    )
     return []
 
 
@@ -420,12 +542,18 @@ def _extract_structured_output(event: dict) -> dict | None:
         if payload is None:
             continue
         if not isinstance(payload, dict):
+            logger.debug("_extract_structured_output: nicht-dict payload gefunden")
             return payload
         if payload.get("success") is False:
+            logger.error(
+                "_extract_structured_output: Schema-Fehler: %s", payload.get("error")
+            )
             raise RuntimeError(f"Schema-Fehler: {payload.get('error')}")
         if "value" in payload:
+            logger.debug("_extract_structured_output: Ergebnis unter 'value' gefunden")
             return payload["value"]
         if "result" in payload:
+            logger.debug("_extract_structured_output: Ergebnis unter 'result' gefunden")
             return payload["result"]
         data = payload.get("data")
         if isinstance(data, dict):

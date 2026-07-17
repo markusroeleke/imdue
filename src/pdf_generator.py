@@ -1,6 +1,10 @@
 from datetime import datetime
 from pathlib import Path
 
+from src.logging_utils import get_logger
+
+logger = get_logger("pdf_generator")
+
 
 def _badge(level: str) -> str:
     icons = {"Low": "🟢", "Medium": "🟡", "High": "🔴", "Critical": "⛔"}
@@ -13,8 +17,9 @@ def _fmt(val, suffix: str = "") -> str:
 
 def generate_markdown(json_data: dict) -> str:
     d = json_data
-    created_at = datetime.now().strftime("%d.%m.%Y %H:%M Uhr")
     address = d.get("property_address") or "–"
+    logger.info("generate_markdown: erstelle Bericht fuer %s", address)
+    created_at = datetime.now().strftime("%d.%m.%Y %H:%M Uhr")
     lines: list[str] = []
     fmt = _fmt
 
@@ -573,10 +578,19 @@ def generate_markdown(json_data: dict) -> str:
     if doc_types:
         lines += ["---", "", "**Analysierte Dokumente:** " + " · ".join(doc_types), ""]
 
-    return "\n".join(lines)
+    markdown = "\n".join(lines)
+    logger.debug(
+        "generate_markdown: fertig, %d Zeichen / %d Zeilen", len(markdown), len(lines)
+    )
+    return markdown
 
 
 def save_report(markdown: str, output_path: str) -> str:
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_path).write_text(markdown, encoding="utf-8")
+    logger.info(
+        "save_report: Bericht gespeichert unter %s (%d Zeichen)",
+        output_path,
+        len(markdown),
+    )
     return output_path

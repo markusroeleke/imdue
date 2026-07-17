@@ -1,7 +1,5 @@
 import asyncio
-import functools
 import json
-import logging
 import re
 import shutil
 import sys
@@ -16,6 +14,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import chainlit as cl
 from dotenv import load_dotenv
 
+from src.logging_utils import (
+    bind_session_log,
+    close_session_log,
+    configure_logging,
+    get_logger,
+    run_sync,
+)
 from src.manus_client import (
     SKILL_STEPS,
     create_analysis_task,
@@ -31,8 +36,8 @@ from src.schema import DUE_DILIGENCE_SCHEMA
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("imdue")
+configure_logging()
+logger = get_logger("app")
 
 # Generic, backend-agnostic messages shown to the user. Real exception details
 # (which may reveal the backend provider, internal URLs, API responses, etc.)
@@ -82,21 +87,26 @@ def _new_session_dir() -> Path:
     session_id = f"{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}"
     session_dir = SESSIONS_DIR / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
+    logger.debug("_new_session_dir: erstellt %s", session_dir)
     return session_dir
 
 
-def _persist_upload(temp_path: str, original_name: str | None, session_dir: Path) -> dict:
+def _persist_upload(
+    temp_path: str, original_name: str | None, session_dir: Path
+) -> dict:
     """Store user upload in the current chat session's folder."""
     source = Path(temp_path)
     display_name = original_name or source.name
     safe_name = Path(display_name).name
     dest = session_dir / f"{uuid.uuid4().hex[:8]}_{safe_name}"
     shutil.copy2(source, dest)
+    logger.debug("_persist_upload: %s -> %s", display_name, dest)
     return {"name": safe_name, "path": str(dest)}
 
 
 async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
-    spinner = ["⏳", "🔄", "🛠️", "⚙️"]
+    # spinner = ["⏳", "🔄", "🛠️", "⚙️"]
+    spinner = "⣾⣽⣻⢿⡿⣟⣯⣷".split()
     idx = 0
     seen_ids: set[str] = set()
     steps: list[str] = []
@@ -154,10 +164,19 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
         ]
         return "\n".join(lines)
 
+    logger.info(
+        "stream_status_updates: starte Fortschrittsanzeige fuer Task %s", task_id
+    )
+    poll_count = 0
     try:
         while True:
-            events = await loop.run_in_executor(
-                None, functools.partial(list_task_messages, task_id, 30, verbose=True)
+            poll_count += 1
+            events = await run_sync(loop, list_task_messages, task_id, 30, "desc", True)
+            logger.debug(
+                "stream_status_updates: Poll #%d fuer Task %s, %d Event(s)",
+                poll_count,
+                task_id,
+                len(events),
             )
             for event in reversed(events):
                 # Always re-apply skill/plan status from every event the API
@@ -187,12 +206,17 @@ async def stream_status_updates(task_id: str, status_msg: cl.Message) -> None:
             await status_msg.update()
             await asyncio.sleep(4)
     except asyncio.CancelledError:
-        pass
+        logger.info(
+            "stream_status_updates: Fortschrittsanzeige fuer Task %s beendet", task_id
+        )
+        raise
 
 
 @cl.on_chat_start
 async def start() -> None:
     session_dir = _new_session_dir()
+    bind_session_log(session_dir)
+    logger.info("start: neue Chat-Session gestartet, session_dir=%s", session_dir)
     cl.user_session.set("session_dir", str(session_dir))
     cl.user_session.set("pending_files", [])
     cl.user_session.set("task_id", None)
@@ -207,11 +231,27 @@ async def start() -> None:
     ).send()
 
 
+@cl.on_chat_end
+async def end() -> None:
+    session_dir = cl.user_session.get("session_dir")
+    if not session_dir:
+        return
+    bind_session_log(session_dir)
+    logger.info("end: Chat-Session beendet, session_dir=%s", session_dir)
+    close_session_log(session_dir)
+
+
 @cl.on_message
 async def main(message: cl.Message) -> None:
     pending_files: list = cl.user_session.get("pending_files", [])
     task_id: str | None = cl.user_session.get("task_id")
     session_dir = Path(cl.user_session.get("session_dir"))
+    bind_session_log(session_dir)
+    logger.debug(
+        "main: Nachricht erhalten (%d Zeichen, %d Anhang/-haenge)",
+        len(message.content),
+        len(message.elements or []),
+    )
 
     # --- Datei-Upload ---
     if message.elements:
@@ -219,9 +259,16 @@ async def main(message: cl.Message) -> None:
             if hasattr(el, "path") and el.path:
                 msg = await cl.Message(content=f"Lade `{el.name}` hoch …").send()
                 try:
-                    record = _persist_upload(el.path, getattr(el, "name", None), session_dir)
+                    record = _persist_upload(
+                        el.path, getattr(el, "name", None), session_dir
+                    )
                     pending_files.append(record)
                     cl.user_session.set("pending_files", pending_files)
+                    logger.info(
+                        "main: Datei gespeichert: %s (%d gesamt)",
+                        record["name"],
+                        len(pending_files),
+                    )
                     msg.content = f"✅ `{record['name']}` gespeichert ({len(pending_files)} Dokument(e) gesamt)."
                     await msg.update()
                 except Exception as exc:
@@ -233,9 +280,11 @@ async def main(message: cl.Message) -> None:
     # --- Analyse starten ---
     if message.content.lower().strip() in TRIGGER_WORDS:
         if not pending_files:
+            logger.info("main: Analyse angefordert, aber keine Dokumente hochgeladen")
             await cl.Message(content="Bitte zuerst Dokumente hochladen.").send()
             return
 
+        logger.info("main: starte Analyse fuer %d Dokument(e)", len(pending_files))
         msg = await cl.Message(
             content=f"Starte Analyse für {len(pending_files)} Dokument(e) …"
         ).send()
@@ -246,29 +295,32 @@ async def main(message: cl.Message) -> None:
             for idx, info in enumerate(pending_files, start=1):
                 msg.content = f"⬆️ Lade Dokument {idx}/{total} zur Analyse …"
                 await msg.update()
-                fid = await loop.run_in_executor(
-                    None, upload_file_to_manus, info["path"], info["name"]
+                fid = await run_sync(
+                    loop, upload_file_to_manus, info["path"], info["name"]
                 )
                 file_ids.append(fid)
+            logger.info(
+                "main: %d Datei(en) zu Manus hochgeladen: %s", len(file_ids), file_ids
+            )
 
             msg.content = "🔍 Analysiere Dokumente …"
             await msg.update()
 
-            new_task_id = await loop.run_in_executor(
-                None, create_analysis_task, file_ids, DUE_DILIGENCE_SCHEMA
+            new_task_id = await run_sync(
+                loop, create_analysis_task, file_ids, DUE_DILIGENCE_SCHEMA
             )
+            logger.info("main: Analyse-Task erstellt: %s", new_task_id)
             cl.user_session.set("task_id", new_task_id)
 
             status_task = asyncio.create_task(stream_status_updates(new_task_id, msg))
 
             try:
-                result: dict = await loop.run_in_executor(
-                    None, poll_for_result, new_task_id
-                )
+                result: dict = await run_sync(loop, poll_for_result, new_task_id)
             finally:
                 status_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await status_task
+            logger.info("main: Analyse-Ergebnis fuer Task %s erhalten", new_task_id)
 
             msg.content = "📄 Erstelle Bericht …"
             await msg.update()
@@ -277,10 +329,12 @@ async def main(message: cl.Message) -> None:
             json_path.write_text(
                 json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            logger.debug("main: JSON-Ergebnis gespeichert unter %s", json_path)
 
             report_md = generate_markdown(result)
             md_path = str(session_dir / f"report_{uuid.uuid4().hex[:8]}.md")
             save_report(report_md, md_path)
+            logger.info("main: Bericht gespeichert unter %s", md_path)
 
             flags = result.get("red_flags", [])
             high = [f for f in flags if f["severity"] in ["High", "Critical"]]
@@ -319,13 +373,15 @@ async def main(message: cl.Message) -> None:
 
     # --- Nachfragen nach abgeschlossener Analyse ---
     if task_id:
+        logger.info("main: Nachfrage zu Task %s", task_id)
         try:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None, send_followup_message, task_id, message.content
-            )
-            reply = await loop.run_in_executor(None, poll_for_followup_reply, task_id)
+            await run_sync(loop, send_followup_message, task_id, message.content)
+            reply = await run_sync(loop, poll_for_followup_reply, task_id)
             reply = _sanitize_backend_text(reply) if reply else reply
+            logger.debug(
+                "main: Nachfrage-Antwort erhalten (%d Zeichen)", len(reply or "")
+            )
             await cl.Message(content=reply or "(Keine Antwort erhalten)").send()
         except Exception as exc:
             _log_error("followup failed", exc)
